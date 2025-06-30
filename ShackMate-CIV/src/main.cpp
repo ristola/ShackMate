@@ -129,15 +129,34 @@ void addMessageToCache(const String &hex)
 AsyncWebServer httpServer(80);
 AsyncWebSocket wsServer("/ws");
 
-void checkAndAutoOta() {
-  if (!allowOta) return;
+String lastFwCheckTime = "Never";
+
+String getCurrentTimeString()
+{
+  time_t now = time(nullptr);
+  struct tm *tm_info = localtime(&now);
+  char buf[32];
+  if (tm_info)
+  {
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
+    return String(buf);
+  }
+  return "Unknown";
+}
+
+void checkAndAutoOta()
+{
+  lastFwCheckTime = getCurrentTimeString();
+  if (!allowOta)
+    return;
 
   HTTPClient http;
   http.setTimeout(4000);
   http.begin(OTA_VERSION_URL);
 
   int httpCode = http.GET();
-  if (httpCode != 200) {
+  if (httpCode != 200)
+  {
     otaStatusMsg = "No updates found";
     latestFwVersion.clear();
     http.end();
@@ -149,7 +168,8 @@ void checkAndAutoOta() {
 
   StaticJsonDocument<512> doc;
   DeserializationError err = deserializeJson(doc, payload);
-  if (err) {
+  if (err)
+  {
     otaStatusMsg = "No updates found";
     latestFwVersion.clear();
     return;
@@ -159,14 +179,16 @@ void checkAndAutoOta() {
   String fwFile = doc["firmware_filename"] | "";
   String fsFile = doc["filesystem_filename"] | "";
 
-  if (latestFwVersion.isEmpty() || fwFile.isEmpty()) {
+  if (latestFwVersion.isEmpty() || fwFile.isEmpty())
+  {
     otaStatusMsg = "No updates found";
     return;
   }
 
   otaStatusMsg = "Latest Firmware: " + latestFwVersion;
 
-  if (String(VERSION) == latestFwVersion) {
+  if (String(VERSION) == latestFwVersion)
+  {
     // Already up to date
     return;
   }
@@ -174,7 +196,8 @@ void checkAndAutoOta() {
   WiFiClient client;
 
   // Filesystem OTA is not supported via httpUpdate; skip this step.
-  if (!fsFile.isEmpty()) {
+  if (!fsFile.isEmpty())
+  {
     DBG_PRINTLN("Filesystem OTA update requested, but not supported via httpUpdate. Skipping...");
     // Optionally set otaStatusMsg = "Filesystem OTA not supported";
     // Or ignore completely.
@@ -182,9 +205,12 @@ void checkAndAutoOta() {
 
   otaStatusMsg = "Updating Firmware...";
   t_httpUpdate_return fwRet = httpUpdate.update(client, OTA_FW_BASE_URL + fwFile);
-  if (fwRet == HTTP_UPDATE_OK) {
+  if (fwRet == HTTP_UPDATE_OK)
+  {
     // Update success, device will reboot automatically
-  } else {
+  }
+  else
+  {
     otaStatusMsg = "Firmware update failed";
   }
 }
@@ -337,6 +363,9 @@ uint32_t getSketchSize();
 uint32_t getFreeSketchSpace();
 float readInternalTemperature();
 
+// Prototype for OTA update check helper
+String checkOtaUpdateAvailable(String &serverVersion, String &fwFile);
+
 // Task function for CI-V/UDP/TCP processing (runs on Core 1)
 // myTaskDebug will be run on Core 1 (CI-V/UDP only)
 void myTaskDebug(void *parameter);
@@ -363,6 +392,44 @@ String toHexUpper(const char *data, int len)
     }
   }
   return String(hexStr);
+}
+
+// --- OTA update check helper (returns status, server_version, and sets latestFwVersion) ---
+String checkOtaUpdateAvailable(String &serverVersion, String &fwFile) {
+  lastFwCheckTime = getCurrentTimeString();
+  serverVersion = "";
+  fwFile = "";
+  HTTPClient http;
+  http.setTimeout(4000);
+  http.begin(OTA_VERSION_URL);
+  int httpCode = http.GET();
+  if (httpCode != 200) {
+    otaStatusMsg = "No updates found";
+    latestFwVersion.clear();
+    http.end();
+    return "no_update";
+  }
+  String payload = http.getString();
+  http.end();
+  StaticJsonDocument<512> doc;
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err) {
+    otaStatusMsg = "No updates found";
+    latestFwVersion.clear();
+    return "no_update";
+  }
+  serverVersion = doc["version"] | "";
+  fwFile = doc["firmware_filename"] | "";
+  if (serverVersion.isEmpty() || fwFile.isEmpty()) {
+    otaStatusMsg = "No updates found";
+    return "no_update";
+  }
+  latestFwVersion = serverVersion;
+  otaStatusMsg = "Latest Firmware: " + latestFwVersion;
+  if (String(VERSION) == latestFwVersion) {
+    return "no_update";
+  }
+  return "update_available";
 }
 
 // -------------------------------------------------------------------------
@@ -1213,21 +1280,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     function loadOtaStatus() {
         fetch('/ota_status')
-            .then(r => r.text())
+            .then(r => r.json())
             .then(val => {
-                let msg = val.trim();
-                let ts = getTimeString();
+                let msg = val.status ? val.status.trim() : "";
+                let lastCheck = val.last_check ? val.last_check : "Unknown";
                 let line = "";
-                // If version present, show "Firmware: Ver: x.x.x @ timestamp"
+                // If version present, show "Firmware: Ver: x.x.x @ lastCheck"
                 let verMatch = msg.match(/Latest Firmware: ([^\s]+)/i);
                 if (verMatch && verMatch[1]) {
-                    line = "Firmware: Ver: " + verMatch[1] + " @ " + ts;
+                    line = "Firmware: Ver: " + verMatch[1] + " @ " + lastCheck;
                 } else if (/Ver: ([0-9.]+)/i.test(msg)) {
                     // e.g. "Firmware: Ver: 1.2.3"
                     let m = msg.match(/Ver: ([0-9.]+)/i);
-                    line = "Firmware: Ver: " + (m ? m[1] : "") + " @ " + ts;
+                    line = "Firmware: Ver: " + (m ? m[1] : "") + " @ " + lastCheck;
                 } else {
-                    line = "Firmware check @ " + ts;
+                    line = "Firmware check @ " + lastCheck;
                 }
                 document.getElementById('otaStatus').innerText = line;
             });
@@ -1249,14 +1316,36 @@ document.addEventListener('DOMContentLoaded', function() {
         var icon = this;
         icon.style.opacity = "0.6";
         icon.style.pointerEvents = "none";
-        document.getElementById('otaStatus').innerText = "Checking for updates...";
+        document.getElementById('otaStatus').innerText = "Checking for Updates!";
+        let timeout = setTimeout(function() {
+            document.getElementById('otaStatus').innerText = "Server Timed Out";
+            icon.style.opacity = "";
+            icon.style.pointerEvents = "";
+        }, 8000); // 8 second timeout
         fetch('/ota_trigger', {method: 'POST'})
-            .then(r => r.text())
-            .then(msg => {
-                document.getElementById('otaStatus').innerText = msg;
+            .then(r => r.json())
+            .then(resp => {
+                clearTimeout(timeout);
+                if (resp.status === 'no_update') {
+                    document.getElementById('otaStatus').innerText = `Current Version is ${resp.server_version}`;
+                } else if (resp.status === 'update_available') {
+                    if (confirm(`An Update is available, Version: ${resp.server_version}.\nProceed with update?`)) {
+                        document.getElementById('otaStatus').innerText = "Updating Firmware...";
+                        fetch('/ota_update', {method: 'POST'})
+                            .then r2 => r2.text())
+                            .then(msg2 => {
+                                document.getElementById('otaStatus').innerText = msg2;
+                            });
+                    } else {
+                        document.getElementById('otaStatus').innerText = `Update canceled. Current Version is ${resp.server_version}`;
+                    }
+                } else {
+                    document.getElementById('otaStatus').innerText = resp.status || "Unknown response";
+                }
             })
             .catch(() => {
-                document.getElementById('otaStatus').innerText = "Update failed or not allowed";
+                clearTimeout(timeout);
+                document.getElementById('otaStatus').innerText = "Server Timed Out";
             })
             .finally(() => {
                 icon.style.opacity = "";
@@ -1498,16 +1587,51 @@ void setup()
           req->send(400, "text/plain", "Missing param");
       } });
   httpServer.on("/ota_status", HTTP_GET, [](AsyncWebServerRequest *req)
-                { req->send(200, "text/plain", otaStatusMsg); });
+                {
+                  String json = "{";
+                  json += "\"status\":\"" + otaStatusMsg + "\",";
+                  json += "\"last_check\":\"" + lastFwCheckTime + "\"";
+                  json += "}";
+                  req->send(200, "application/json", json);
+                });
   httpServer.on("/ota_trigger", HTTP_POST, [](AsyncWebServerRequest *req)
   {
       if (!allowOta) {
-          req->send(403, "text/plain", "Automatic updates not enabled");
+          req->send(403, "application/json", "{\"status\":\"forbidden\"}");
           return;
       }
-      otaStatusMsg = "Checking for updates...";
-      checkAndAutoOta();
-      req->send(200, "text/plain", otaStatusMsg);
+      String serverVersion, fwFile;
+      String status = checkOtaUpdateAvailable(serverVersion, fwFile);
+      String json = "{";
+      json += "\"status\":\"" + status + "\",";
+      json += "\"server_version\":\"" + serverVersion + "\",";
+      json += "\"current_version\":\"" + String(VERSION) + "\"";
+      json += "}";
+      req->send(200, "application/json", json);
+  });
+  httpServer.on("/ota_update", HTTP_POST, [](AsyncWebServerRequest *req)
+  {
+      if (!allowOta) {
+          req->send(403, "application/json", "{\"status\":\"forbidden\"}");
+          return;
+      }
+      String serverVersion, fwFile;
+      String status = checkOtaUpdateAvailable(serverVersion, fwFile);
+      if (status != "update_available") {
+        req->send(200, "text/plain", "No update available");
+        return;
+      }
+      otaStatusMsg = "Updating Firmware...";
+      WiFiClient client;
+      t_httpUpdate_return fwRet = httpUpdate.update(client, OTA_FW_BASE_URL + fwFile);
+      if (fwRet == HTTP_UPDATE_OK) {
+        // Update success, device will reboot automatically
+        otaStatusMsg = "Update successful, rebooting...";
+        req->send(200, "text/plain", "Update successful, rebooting...");
+      } else {
+        otaStatusMsg = "Firmware update failed";
+        req->send(200, "text/plain", "Firmware update failed");
+      }
   });
   httpServer.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request)
                 { request->send(204); });
@@ -1535,6 +1659,7 @@ void setup()
   allowOta = preferences.getBool("allow_ota", false);
   preferences.end();
   broadcastStatus();
+  // Only check for firmware update on boot if Allow Automatic Updates is enabled
   static bool hasCheckedFwUpdate = false;
   if (allowOta && !hasCheckedFwUpdate) {
     checkAndAutoOta();
