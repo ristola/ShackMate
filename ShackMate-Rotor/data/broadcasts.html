@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>UDP Broadcasts - %PROJECT_NAME%</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+        text-align: center;
+      }
+      .header {
+        font-size: 2em;
+        margin-bottom: 10px;
+      }
+      .tabs {
+        overflow: hidden;
+        background-color: #f1f1f1;
+        display: inline-block;
+      }
+      .tabs a {
+        float: left;
+        border: 1px solid #ccc;
+        background-color: #ddd;
+        padding: 10px 20px;
+        text-decoration: none;
+        color: black;
+        margin: 0 5px;
+      }
+      .tabs a:hover {
+        background-color: #ccc;
+      }
+      .tabs a.active {
+        background-color: #bbb;
+      }
+      ul {
+        list-style-type: none;
+        padding: 0;
+        max-width: 80%;
+        margin: 0 auto;
+        text-align: left;
+      }
+      li {
+        background: #f1f1f1;
+        margin: 5px;
+        padding: 10px;
+        border: 1px solid #ccc;
+        word-wrap: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">%PROJECT_NAME%</div>
+    <div class="tabs">
+      <a href="/">Info</a>
+      <a href="/config">Config</a>
+      <a href="/rotor">Rotor</a>
+      <a href="/broadcasts" class="active">Broadcasts</a>
+      <a href="/about">About</a>
+    </div>
+
+    <h2>Last 10 UDP (4210) Broadcasts</h2>
+    <!-- The server will replace %BROADCASTS_LIST% with <li> entries -->
+    <ul>
+      %BROADCASTS_LIST%
+    </ul>
+  </body>
+</html>

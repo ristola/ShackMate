@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>%PROJECT_NAME%</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 20px; text-align: center; }
+      .header { font-size: 2em; margin-bottom: 10px; }
+      .tabs {
+        overflow: hidden;
+        background-color: #f1f1f1;
+        display: inline-block;
+      }
+      .tabs a {
+        float: left;
+        border: 1px solid #ccc;
+        background-color: #ddd;
+        padding: 10px 20px;
+        text-decoration: none;
+        color: black;
+        margin: 0 5px;
+      }
+      .tabs a:hover { background-color: #ccc; }
+      .tabs a.active { background-color: #bbb; }
+      /* New styles for the summary section */
+      .summary {
+        text-align: left;
+        max-width: 600px;
+        margin: 30px auto 0;
+        border-top: 1px solid #ccc;
+        padding-top: 20px;
+      }
+      .summary h2 { font-size: 1.5em; margin-bottom: 10px; }
+      .summary ul { list-style: disc; margin-left: 20px; text-align: left; }
+    </style>
+  </head>
+  <body>
+    <div class="header">%PROJECT_NAME%</div>
+    <div class="tabs">
+      <a href="/">Info</a>
+      <a href="/config" class="active">Config</a>
+      <a href="/rotor">Rotor</a>
+      <a href="/broadcasts">Broadcasts</a>
+      <a href="/about">About</a>
+    </div>
+    <h1>About This Device</h1>
+    <p>This is the %PROJECT_NAME% firmware (v%VERSION%) by Half Baked Circuits.</p>
+    
+    <!-- New Project Summary Section -->
+    <div class="summary">
+      <h2>Project Summary</h2>
+      <ul>
+        <li><strong>Mode Selection:</strong> Toggle between manual and automatic modes with visual color indicators (red for automatic, blue for manual).</li>
+        <li><strong>Real-Time Position Control:</strong> Click on the plot to set a target position; the system gradually moves the rotor toward that target.</li>
+        <li><strong>Analog and Digital Meters:</strong> Displays rotor positions via analog scales (built using Bezier curves) and digital readouts. Needles change color—red when moving, green when stopped.</li>
+        <li><strong>Memory Buttons (M1–M6):</strong> Store and recall specific rotor positions using ESP preferences. A short press recalls a saved position, a medium press stores (button turns blue), and a long press clears (button turns gray).</li>
+        <li><strong>Calibrate Popup:</strong> A calibrate button opens a popup with options such as Magnetic Align, Solar Align, and Manual Offset.</li>
+        <li><strong>Keypad Input:</strong> A numeric keypad allows direct entry of azimuth and elevation values. It toggles on meter click and hides when clicking outside.</li>
+        <li><strong>Communication &amp; State Updates:</strong> Uses WebSockets and UDP broadcasts for real-time state updates including rotor positions, mode, and satellite information.</li>
+        <li><strong>Satellite Info Display:</strong> When a satellite link is active, the interface displays the satellite’s name and channel info.</li>
+        <li><strong>Persistent Storage &amp; OTA:</strong> Rotor positions and settings are saved persistently on the ESP, and over-the-air updates are supported.</li>
+      </ul>
+    </div>
+  </body>
+</html>

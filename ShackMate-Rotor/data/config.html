@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>%PROJECT_NAME% - Configuration</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 20px; text-align: center; }
+      .header { font-size: 2em; margin-bottom: 10px; }
+      .tabs {
+        overflow: hidden;
+        background-color: #f1f1f1;
+        display: inline-block;
+        margin-bottom: 20px;
+      }
+      .tabs a {
+        float: left;
+        border: 1px solid #ccc;
+        background-color: #ddd;
+        padding: 10px 20px;
+        text-decoration: none;
+        color: black;
+        margin: 0 5px;
+      }
+      .tabs a:hover { background-color: #ccc; }
+      .tabs a.active { background-color: #bbb; }
+      .container { display: inline-block; text-align: left; }
+      .container p { margin: 10px 0; }
+      input[type=text] {
+         width: 300px;
+         padding: 10px;
+         font-size: 16px;
+      }
+      input[type=submit] {
+         padding: 10px 20px;
+         font-size: 16px;
+         margin: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">%PROJECT_NAME%</div>
+    <div class="tabs">
+      <a href="/">Info</a>
+      <a href="/config" class="active">Config</a>
+      <a href="/rotor">Rotor</a>
+      <a href="/broadcasts">Broadcasts</a>
+      <a href="/about">About</a>
+    </div>
+    <h1>Configuration</h1>
+    <div class="container">
+      <form action="/saveConfig" method="POST">
+        <p>
+          WebSocket Port:<br>
+          <input type="text" name="tcpPort" value="%WEBSOCKET_PORT%" required>
+        </p>
+        <p>
+          Rotor Port:<br>
+          <input type="text" name="rotorPort" value="%ROTOR_PORT%" required>
+        </p>
+        <p>
+          Grid SQ:<br>
+          <input type="text" name="gridSQ" placeholder="ex. FM08TO" value="%GRID_SQ%">
+        </p>
+        <p>
+          <input type="submit" value="Save & Reboot">
+        </p>
+      </form>
+      <form action="/restoreConfig" method="POST">
+        <input type="submit" value="Restore Defaults & Reboot">
+      </form>
+    </div>
+  </body>
+</html>

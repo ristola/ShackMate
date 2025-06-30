@@ -1,0 +1,3 @@
+httpServer.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request){
+  request->send(LittleFS, "/favicon.ico", "image/x-icon");
+});

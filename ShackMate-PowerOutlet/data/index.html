@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>%PROJECT_NAME% - Sensors</title>
+  <style>
+    body {
+      background: #111;
+      color: #fff;
+      font-family: sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+    }
+    .panel {
+      position: relative;
+      background: #333;
+      border: 2px solid #fff;
+      border-radius: 24px;
+      padding: 24px;
+      padding-bottom: 20px; /* reduced space for footer */
+      margin: 10px;
+    }
+    .panel h1 {
+      margin: 0 0 20px;
+      text-align: center;
+    }
+    .control-item, .sensor-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 12px 0;
+      font-size: 20px;
+    }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 40px;
+      height: 24px;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #ccc;
+      border-radius: 12px;
+      transition: .2s;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 20px;
+      width: 20px;
+      left: 2px;
+      bottom: 2px;
+      background-color: white;
+      border-radius: 50%;
+      transition: .2s;
+    }
+    .switch input:checked + .slider {
+      background-color: #2196F3;
+    }
+    .switch input:checked + .slider:before {
+      transform: translateX(16px);
+    }
+    #timestamp {
+      text-align: center;
+      margin-top: 20px;
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+    .outlet-label span {
+      text-decoration: underline;
+    }
+    .label-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .outlet-label {
+      white-space: pre-wrap;
+    }
+    #footer {
+      position: absolute;
+      bottom: 0;
+      left: 50%;
+      transform: translate(-50%, 50%);
+      background: #333;
+      padding: 0 16px;
+      color: #aaa;
+      font-size: 14px;
+      pointer-events: none;
+      white-space: nowrap;  /* Prevent wrapping */
+    }
+    #settings-icon {
+      user-select: none;
+      transition: color 0.2s;
+    }
+    #settings-icon:hover {
+      color: #fff700;
+      text-shadow: 0 0 8px #fff700aa;
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>ShackMate Outlet Control</h1>
+    <div class="control-item">
+      <div class="label-wrap">
+        <span>🔌</span>
+        <span class="outlet-label" data-outlet="1" id="label-1">Outlet 1</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="relay1-toggle"/>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="control-item">
+      <div class="label-wrap">
+        <span>🔌</span>
+        <span class="outlet-label" data-outlet="2" id="label-2">Outlet 2</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="relay2-toggle"/>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <hr style="border-color: #555;"/>
+    <div class="sensor-item">
+      <span>Volts:</span>
+      <span><span id="volts">--</span> V</span>
+    </div>
+    <div class="sensor-item">
+      <span>Amps:</span>
+      <span><span id="amps">--</span> A</span>
+    </div>
+    <div class="sensor-item">
+      <span>Watts:</span>
+      <span><span id="watts">--</span> W</span>
+    </div>
+    <div class="sensor-item">
+      <span>LUX:</span>
+      <span><span id="lux">--</span> lux</span>
+    </div>
+    <div id="timestamp">Time: --</div>
+    
+    <!-- Connection Status Section - Centered between icons -->
+    <div style="position: relative; margin-top: 12px; margin-bottom: 40px;">
+      <!-- Left icon -->
+      <span id="info-icon" style="position:absolute; bottom:4px; left:12px; font-size:24px; cursor:pointer;">ℹ️</span>
+      
+      <!-- Centered status container -->
+      <div style="text-align: center; padding: 0 60px;">
+        <div id="remote-ws-status" style="font-size: 14px; color: #aaa;">
+          Remote WS: <span id="remote-ws-status-text">Disconnected</span>
+        </div>
+      </div>
+      
+      <!-- Right icon -->
+      <span id="settings-icon" style="position: absolute; bottom: 4px; right: 18px; font-size: 28px; cursor: pointer;">&#9881;&#65039;</span>
+    </div>
+    
+    <div id="footer">
+      ShackMate - Outlet by Half Baked Circuits.
+    </div>
+  </div>
+
+  <!-- Info Modal Overlay -->
+  <div id="infoModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.7); z-index:2000;">
+    <div class="panel" style="position:relative; width:600px; max-width:90vw; margin:5vh auto; padding:24px; background:#333; border:2px solid #fff; border-radius:24px;">
+      <span id="closeInfo" style="position:absolute; top:12px; right:12px; font-size:24px; cursor:pointer;">&times;</span>
+      <h1>System Information</h1>
+      <p>Current Time: <span id="info-time"></span></p>
+      <p>IP Address: <span id="info-ip"></span></p>
+      <p>WebSocket Port: <span id="info-wsport"></span></p>
+      <p>UDP Port: <span id="info-udpport"></span></p>
+      <p>Version: <span id="info-version"></span></p>
+      <h2>Extended System Info</h2>
+      <p>Uptime: <span id="info-uptime"></span></p>
+      <p>Chip ID: <span id="info-chipid"></span></p>
+      <p>Chip Revision: <span id="info-chiprev"></span></p>
+      <p>Flash Size: <span id="info-flash"></span></p>
+      <p>PSRAM Size: <span id="info-psram"></span></p>
+      <p>CPU Frequency: <span id="info-cpufreq"></span> MHz</p>
+      <p>Free Heap: <span id="info-heap"></span> bytes</p>
+      <p>Memory (Used / Total): <span id="info-memused"></span> / <span id="info-memtotal"></span></p>
+      <p>Temperature: <span id="info-tempc"></span> °C / <span id="info-tempf"></span> °F</p>
+    </div>
+  </div>
+
+  <!-- Settings Modal Overlay -->
+  <div id="settingsModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.7); z-index:2100;">
+    <div class="panel" style="position:relative; width:340px; max-width:90vw; margin:10vh auto; padding:24px; background:#333; border:2px solid #fff; border-radius:24px; text-align:center;">
+      <span id="closeSettings" style="position:absolute; top:12px; right:12px; font-size:24px; cursor:pointer;">&times;</span>
+      <h2>Settings</h2>
+      
+      <!-- Debug Display Control -->
+      <div style="margin: 20px 0; text-align: left; padding: 0 20px;">
+        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+          <input type="checkbox" id="debug-display-toggle" style="transform: scale(1.2);">
+          <span style="font-size: 16px;">Show Debug Messages</span>
+        </label>
+        <div style="margin-top: 5px; color: #aaa; font-size: 12px; margin-left: 30px;">
+          Toggle the debug message overlay in the top-right corner
+        </div>
+      </div>
+      
+      <hr style="border-color: #555; margin: 20px 0;">
+      
+      <h3 style="margin-bottom: 16px;">System Actions</h3>
+      
+      <!-- Device ID Configuration -->
+      <div style="margin: 20px 0; text-align: left; padding: 0 20px;">
+        <label style="display: block; margin-bottom: 8px;">
+          <span style="font-size: 16px;">Device ID:</span>
+          <input type="number" id="device-id-input" min="1" max="4" value="1" 
+                 style="margin-left: 10px; width: 60px; padding: 4px; border: 1px solid #555; 
+                        background: #222; color: #fff; border-radius: 3px;">
+        </label>
+        <div style="margin-top: 5px; color: #aaa; font-size: 12px;">
+          CIV Address: <span id="civ-address-display">B0</span> (ID 1-4 maps to B0-B3)
+        </div>
+      </div>
+      
+      <button id="btn-reboot" style="margin:16px 0; width:90%; font-size:18px;">Reboot</button><br/>
+      <button id="btn-restore" style="margin:8px 0; width:90%; font-size:18px;">Erase WiFi Credentials</button>
+      <div style="margin-top:20px; color:#aaa; font-size:13px;">
+        Erase WiFi credentials and reboot (Device ID preserved).
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const WS_PORT = 4000;
+    // Cache output spans for faster updates
+    const outVolts = document.getElementById('volts');
+    const outAmps  = document.getElementById('amps');
+    const outWatts = document.getElementById('watts');
+    const outLux   = document.getElementById('lux');
+    const outTime  = document.getElementById('timestamp');
+
+    let latestStatus = {};
+    let socket;
+    const r1 = document.getElementById('relay1-toggle');
+    const r2 = document.getElementById('relay2-toggle');
+
+    function connectWS() {
+      socket = new WebSocket(`ws://${location.hostname}:${WS_PORT}/ws`);
+      
+      socket.onopen = () => {
+        console.log('WS connected');
+        // Don't update status here - wait for status message with discovered IP info
+      };
+      
+      socket.onmessage = ev => {
+        console.log('WS received:', ev.data);
+        const d = JSON.parse(ev.data);
+        if (d.type === 'state' || d.type === 'status') {
+          r1.checked = d.output1State;
+          r2.checked = d.output2State;
+          if (d.label1) document.getElementById('label-1').textContent = d.label1;
+          if (d.label2) document.getElementById('label-2').textContent = d.label2;
+        }
+        if (d.type === 'status') {
+          // Update sensor outputs with safe formatting
+          outVolts.textContent = (typeof d.volts === 'number' ? d.volts.toFixed(1) : '--');
+          outAmps.textContent  = (typeof d.amps  === 'number' ? d.amps.toFixed(2)  : '--');
+          outWatts.textContent = (typeof d.watts === 'number' ? d.watts.toFixed(0) : '--');
+          outLux.textContent   = (typeof d.lux   === 'number' ? d.lux.toFixed(1)   : '--');
+          outTime.textContent  = `Time: ${d.timestamp || '--'}`;
+          
+          // Update Device ID from device if available
+          if (typeof d.deviceId === 'number' && d.deviceId >= 1 && d.deviceId <= 4) {
+            deviceIdInput.value = d.deviceId;
+            updateCivAddress();
+          }
+          
+          // Update Remote WS status with discovered IP
+          const remoteWSStatusEl = document.getElementById('remote-ws-status-text');
+          
+          if (d.civServerConnected === true && d.civServerIP) {
+            updateRemoteWSStatus('Connected', '#4CAF50', d.civServerIP);
+          } else if (d.civServerIP && d.civServerIP.length > 0) {
+            // If we have an IP but not connected, check if we were ever connected to this IP
+            if (d.civServerEverConnected === true) {
+              updateRemoteWSStatus('Reconnecting', '#FF9800', d.civServerIP);
+            } else {
+              updateRemoteWSStatus('Discovered', '#FFA500', d.civServerIP);
+            }
+          } else {
+            updateRemoteWSStatus('Discovering', '#FFA500');
+          }
+          
+          latestStatus = d;
+        }
+        if (d.type === 'debug') {
+          // Display debug messages in browser console and as temporary overlay
+          console.log('Debug:', d.message);
+          showDebugMessage(d.message);
+        }
+        if (d.type === 'labels') {
+          const id = d.outlet === 1 ? 'label-1' : 'label-2';
+          document.getElementById(id).textContent = d.text;
+        }
+      };
+      
+      socket.onclose = () => {
+        console.log('WS disconnected');
+        updateRemoteWSStatus('Local WS Disconnected', '#F44336'); // Red
+        setTimeout(connectWS, 1000);
+      };
+      
+      socket.onerror = () => {
+        console.log('WS error');
+        updateRemoteWSStatus('Local WS Error', '#F44336'); // Red
+      };
+    }
+    
+    function updateRemoteWSStatus(status, color, ip = '') {
+      const statusEl = document.getElementById('remote-ws-status-text');
+      if (statusEl) {
+        if (ip && ip.length > 0) {
+          statusEl.textContent = `${status} (${ip})`;
+        } else {
+          statusEl.textContent = status;
+        }
+        statusEl.style.color = color;
+      }
+    }
+    
+    function showDebugMessage(message) {
+      // Check if debug display is enabled
+      const debugToggle = document.getElementById('debug-display-toggle');
+      if (!debugToggle || !debugToggle.checked) {
+        return; // Don't show debug messages if disabled
+      }
+      
+      // Create or update debug overlay
+      let debugDiv = document.getElementById('debug-overlay');
+      if (!debugDiv) {
+        debugDiv = document.createElement('div');
+        debugDiv.id = 'debug-overlay';
+        debugDiv.style.cssText = `
+          position: fixed;
+          top: 10px;
+          right: 10px;
+          background: rgba(0,0,0,0.8);
+          color: #00ff00;
+          padding: 10px;
+          border-radius: 5px;
+          font-family: monospace;
+          font-size: 12px;
+          max-width: 400px;
+          max-height: 600px;
+          overflow-y: auto;
+          word-wrap: break-word;
+          z-index: 1000;
+        `;
+        document.body.appendChild(debugDiv);
+      }
+      
+      // Add timestamp and message
+      const timestamp = new Date().toLocaleTimeString();
+      debugDiv.innerHTML = `[${timestamp}] ${message}<br>` + (debugDiv.innerHTML || '');
+      
+      // Keep only last 30 messages (doubled from 15 to match the larger window)
+      const lines = debugDiv.innerHTML.split('<br>');
+      if (lines.length > 31) {
+        debugDiv.innerHTML = lines.slice(0, 31).join('<br>');
+      }
+      
+      // Removed auto-dimming - debug overlay stays bright
+    }
+
+    r1.onchange = () => {
+      socket.send(JSON.stringify({ command: 'output1', value: r1.checked }));
+    };
+    r2.onchange = () => {
+      socket.send(JSON.stringify({ command: 'output2', value: r2.checked }));
+    };
+
+    // Make labels editable (only text part clickable)
+    document.querySelectorAll('.outlet-label').forEach(el => {
+      el.onclick = (e) => {
+        const num = el.dataset.outlet;
+        const id = 'label-' + num;
+        const current = document.getElementById(id).textContent;
+        const newLabel = prompt('Enter new name for Outlet ' + num, current);
+        if (newLabel != null && newLabel.trim() !== '') {
+          document.getElementById(id).textContent = newLabel;
+          socket.send(JSON.stringify({
+            command: 'setLabel',
+            outlet: parseInt(num),
+            text: newLabel
+          }));
+        }
+        e.stopPropagation();
+      };
+    });
+
+    // Initialize remote WebSocket status
+    updateRemoteWSStatus('Discovering', '#FFA500'); // Orange
+    connectWS();
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const infoIcon = document.getElementById('info-icon');
+      const infoModal = document.getElementById('infoModal');
+      const closeInfo = document.getElementById('closeInfo');
+      infoIcon.addEventListener('click', () => {
+        // Populate live info from latestStatus
+        document.getElementById('info-time').textContent     = latestStatus.timestamp    || '--';
+        document.getElementById('info-ip').textContent       = location.hostname;
+        document.getElementById('info-wsport').textContent  = location.port || '4000';
+        document.getElementById('info-udpport').textContent = latestStatus.udpPort     || '--';
+        document.getElementById('info-version').textContent = latestStatus.version     || '--';
+        document.getElementById('info-uptime').textContent  = latestStatus.uptime      || '--';
+        document.getElementById('info-chipid').textContent  = latestStatus.chipId      || '--';
+        document.getElementById('info-chiprev').textContent = latestStatus.chipRevision|| '--';
+        document.getElementById('info-flash').textContent   = latestStatus.flashTotal  || '--';
+        {
+          const psram = latestStatus.psramSize || 0;
+          document.getElementById('info-psram').textContent = psram > 0 ? psram : 'n/a';
+        }
+        document.getElementById('info-cpufreq').textContent = latestStatus.cpuFreq     || '--';
+        document.getElementById('info-heap').textContent    = latestStatus.freeHeap    || '--';
+        document.getElementById('info-memused').textContent = latestStatus.memUsed     || '--';
+        document.getElementById('info-memtotal').textContent= latestStatus.memTotal    || '--';
+        document.getElementById('info-tempc').textContent   = latestStatus.temperatureC|| '--';
+        document.getElementById('info-tempf').textContent   = latestStatus.temperatureF|| '--';
+
+        infoModal.style.display = 'block';
+      });
+      closeInfo.addEventListener('click', () => {
+        infoModal.style.display = 'none';
+      });
+      // Close when clicking outside the panel
+      infoModal.addEventListener('click', (e) => {
+        const panel = infoModal.querySelector('.panel');
+        if (e.target === infoModal) {
+          infoModal.style.display = 'none';
+        }
+      });
+    }); // End of DOMContentLoaded
+
+    // SETTINGS MODAL LOGIC
+    const settingsIcon = document.getElementById('settings-icon');
+    const settingsModal = document.getElementById('settingsModal');
+    const closeSettings = document.getElementById('closeSettings');
+    const btnReboot = document.getElementById('btn-reboot');
+    const btnRestore = document.getElementById('btn-restore');
+    const debugToggle = document.getElementById('debug-display-toggle');
+    const deviceIdInput = document.getElementById('device-id-input');
+    const civAddressDisplay = document.getElementById('civ-address-display');
+
+    // CIV Address mapping: Device ID 1-4 maps to B0-B3
+    let civAddress = 'B0'; // Default CIV address
+
+    function updateCivAddress() {
+      const deviceId = parseInt(deviceIdInput.value);
+      if (deviceId >= 1 && deviceId <= 4) {
+        civAddress = 'B' + (deviceId - 1); // ID 1->B0, 2->B1, 3->B2, 4->B3
+        civAddressDisplay.textContent = civAddress;
+        
+        // Save Device ID to localStorage
+        localStorage.setItem('deviceId', deviceId);
+        
+        // Send update to device if WebSocket is connected
+        if (socket && socket.readyState === 1) {
+          socket.send(JSON.stringify({
+            command: 'setDeviceId',
+            deviceId: deviceId,
+            civAddress: civAddress
+          }));
+        }
+      }
+    }
+
+    // Load Device ID from localStorage
+    const savedDeviceId = localStorage.getItem('deviceId');
+    if (savedDeviceId !== null) {
+      const deviceId = parseInt(savedDeviceId);
+      if (deviceId >= 1 && deviceId <= 4) {
+        deviceIdInput.value = deviceId;
+        updateCivAddress();
+      }
+    }
+
+    // Handle Device ID input changes
+    deviceIdInput.addEventListener('input', updateCivAddress);
+    deviceIdInput.addEventListener('change', updateCivAddress);
+
+    // Load debug display preference from localStorage
+    const debugEnabled = localStorage.getItem('debugDisplayEnabled');
+    if (debugEnabled !== null) {
+      debugToggle.checked = debugEnabled === 'true';
+    }
+
+    // Handle debug toggle changes
+    debugToggle.addEventListener('change', () => {
+      localStorage.setItem('debugDisplayEnabled', debugToggle.checked);
+      
+      // Hide debug overlay if disabled
+      if (!debugToggle.checked) {
+        const debugDiv = document.getElementById('debug-overlay');
+        if (debugDiv) {
+          debugDiv.style.display = 'none';
+        }
+      } else {
+        // Show debug overlay if enabled and it exists
+        const debugDiv = document.getElementById('debug-overlay');
+        if (debugDiv) {
+          debugDiv.style.display = 'block';
+        }
+      }
+    });
+
+    settingsIcon.addEventListener('click', () => {
+      settingsModal.style.display = 'block';
+    });
+    closeSettings.addEventListener('click', () => {
+      settingsModal.style.display = 'none';
+    });
+    settingsModal.addEventListener('click', (e) => {
+      if (e.target === settingsModal) settingsModal.style.display = 'none';
+    });
+
+    btnReboot.addEventListener('click', () => {
+      // Clear the debug log first
+      const debugDiv = document.getElementById('debug-overlay');
+      if (debugDiv) {
+        debugDiv.innerHTML = '';
+      }
+      
+      // Show "Rebooting !" message
+      showDebugMessage('Rebooting !');
+      
+      // Update Remote WS status to indicate reboot request
+      updateRemoteWSStatus('Paused - Reboot Requested', '#FF9800');
+      
+      // Send reboot command to backend (WebSocket or HTTP)
+      if (socket && socket.readyState === 1) {
+        socket.send(JSON.stringify({ command: "reboot" }));
+        // Disconnect WebSocket client cleanly before reboot
+        setTimeout(() => {
+          socket.close();
+        }, 100); // Small delay to ensure command is sent
+      } else {
+        fetch('/reboot', { method: "POST" });
+      }
+      settingsModal.style.display = 'none';
+    });
+
+    btnRestore.addEventListener('click', () => {
+      if (confirm("Erase WiFi credentials and reboot (Device ID preserved)?")) {
+        if (socket && socket.readyState === 1) {
+          socket.send(JSON.stringify({ command: "restore" }));
+        } else {
+          fetch('/restore', { method: "POST" });
+        }
+        settingsModal.style.display = 'none';
+      }
+    });
+
+  </script>
+</body>
+</html>

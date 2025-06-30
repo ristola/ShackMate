@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>%PROJECT_NAME%</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+        text-align: center;
+      }
+      .header {
+        font-size: 2em;
+        margin-bottom: 10px;
+      }
+      .tabs {
+        overflow: hidden;
+        background-color: #f1f1f1;
+        display: inline-block;
+        margin-bottom: 20px;
+      }
+      .tabs a {
+        float: left;
+        border: 1px solid #ccc;
+        background-color: #ddd;
+        padding: 10px 20px;
+        text-decoration: none;
+        color: black;
+        margin: 0 5px;
+      }
+      .tabs a:hover {
+        background-color: #ccc;
+      }
+      .tabs a.active {
+        background-color: #bbb;
+      }
+      h2 {
+        margin-top: 1.5em;
+      }
+      /* Top-level <ul> styling */
+      ul {
+        text-align: left;
+        display: inline-block;
+        margin: 0 auto;
+        padding: 0;
+        list-style-position: inside;
+      }
+      /* Nested <ul> gets a modest left margin (adjust value as needed) */
+      ul ul {
+        margin-left: 1.5em; /* About 4-8 spaces worth of indent */
+        padding-left: 0;
+        list-style-position: inside;
+      }
+      li {
+        margin: 0.5em 0;
+      }
+      code {
+        background: #eee;
+        padding: 2px 4px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">%PROJECT_NAME%</div>
+    <div class="tabs">
+      <a href="/">Info</a>
+      <a href="/config">Config</a>
+      <a href="/switch">Switch</a>
+      <a href="/about" class="active">About</a>
+    </div>
+
+    <h1>About This Device</h1>
+    <p>This is the <strong>%PROJECT_NAME%</strong> firmware (v<strong>%VERSION%</strong>) by Half Baked Circuits.</p>
+
+    <h2>Key Features</h2>
+    <ul>
+      <li><strong>BLE Provisioning:</strong> Configure Wi‑Fi SSID &amp; password over Bluetooth Low Energy at any time.</li>
+      <li><strong>WiFiManager Fallback:</strong> Captive‑portal setup if stored credentials fail.</li>
+      <li><strong>Persistent Settings:</strong> Antenna names, selected index, network config stored in NVS.</li>
+      <li><strong>Real‑Time Control:</strong> WebSockets ensure instantaneous state sync across clients.</li>
+      <li><strong>OTA Updates:</strong> Firmware can be updated over the air.</li>
+      <li><strong>Time Sync:</strong> NTP‑based clock for accurate timestamps.</li>
+      <li><strong>mDNS Discovery:</strong> Reachable at <code>%s.local</code> on your LAN.</li>
+    </ul>
+
+  </body>
+</html>

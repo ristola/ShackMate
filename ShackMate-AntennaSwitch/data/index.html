@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>%PROJECT_NAME% - Dashboard</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      color: #333;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+      padding: 30px;
+    }
+    .header {
+      text-align: center;
+      font-size: 2.5em;
+      margin-bottom: 10px;
+      color: #2c3e50;
+      text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
+    }
+    .version {
+      text-align: center;
+      font-size: 1.2em;
+      margin-bottom: 30px;
+      color: #7f8c8d;
+    }
+    .nav-section {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    .nav-button {
+      display: inline-block;
+      padding: 15px 30px;
+      margin: 10px;
+      background: linear-gradient(135deg, #3498db, #2980b9);
+      color: white;
+      text-decoration: none;
+      border-radius: 8px;
+      font-size: 1.1em;
+      font-weight: bold;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+      transition: all 0.3s ease;
+    }
+    .nav-button:hover {
+      background: linear-gradient(135deg, #2980b9, #1abc9c);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 12px rgba(0,0,0,0.3);
+    }
+    .status-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      margin-bottom: 30px;
+    }
+    .main-content {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .section {
+      background: #f8f9fa;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      border: 1px solid #e9ecef;
+      border-left: 4px solid #3498db;
+    }
+    .section h2 {
+      margin-top: 0;
+      margin-bottom: 15px;
+      color: #2c3e50;
+      font-size: 1.4em;
+      font-weight: bold;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 8px 20px;
+      align-items: center;
+    }
+    .info-label {
+      font-weight: bold;
+      color: #495057;
+    }
+    .info-value {
+      color: #212529;
+      font-family: monospace;
+    }
+    .status-connected {
+      background: #d4edda;
+      color: #155724;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: bold;
+    }
+    .status-listening {
+      background: #fff3cd;
+      color: #856404;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: bold;
+    }
+    .status-ws-disconnected {
+      background: #f8d7da;
+      color: #721c24;
+      padding: 2px 14px;
+      border-radius: 8px;
+      font-weight: bold;
+      font-size: 1.2em;
+      display: inline-block;
+      margin-left: 8px;
+    }
+    .status-ws-connected {
+      background: #d4edda;
+      color: #155724;
+      padding: 2px 14px;
+      border-radius: 8px;
+      font-weight: bold;
+      font-size: 1.2em;
+      display: inline-block;
+      margin-left: 8px;
+    }
+    .config-section {
+      grid-column: span 2;
+    }
+    .antenna-inputs {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 15px;
+      margin: 20px 0;
+    }
+    .antenna-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .antenna-input {
+      padding: 8px 12px;
+      border: 2px solid #bdc3c7;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: border-color 0.3s;
+    }
+    .antenna-input:focus {
+      outline: none;
+      border-color: #3498db;
+    }
+    .config-controls {
+      display: flex;
+      gap: 20px;
+      align-items: center;
+      margin: 20px 0;
+      flex-wrap: wrap;
+    }
+    .radio-group {
+      display: flex;
+      gap: 15px;
+      align-items: center;
+    }
+    .radio-group label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .device-number-input {
+      padding: 8px 12px;
+      border: 2px solid #bdc3c7;
+      border-radius: 6px;
+      width: 80px;
+    }
+    .action-buttons {
+      display: flex;
+      gap: 15px;
+      margin-top: 20px;
+    }
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: bold;
+      transition: all 0.3s;
+    }
+    .btn-primary {
+      background: #3498db;
+      color: white;
+    }
+    .btn-primary:hover {
+      background: #2980b9;
+    }
+    .btn-danger {
+      background: #e74c3c;
+      color: white;
+    }
+    .btn-danger:hover {
+      background: #c0392b;
+    }
+    .antenna-rcs10-only {
+      transition: opacity 0.3s ease-in-out;
+      opacity: 1;
+    }
+    .antenna-rcs10-only.hidden {
+      display: none;
+      opacity: 0;
+    }
+    @media (max-width: 768px) {
+      .main-content {
+        grid-template-columns: 1fr;
+      }
+      .config-section {
+        grid-column: span 1;
+      }
+      .antenna-inputs {
+        grid-template-columns: 1fr;
+      }
+    }
+    .footer {
+      margin-top: 30px;
+      padding-top: 20px;
+      border-top: 1px solid #e9ecef;
+      text-align: center;
+      color: #6c757d;
+      font-size: 0.9em;
+    }
+  </style>
+  <script>
+    // --- Auto-refresh timer ---
+    let refreshSeconds = 30;
+    function updateRefreshBadge() {
+      const badge = document.getElementById('autoRefreshBadge');
+      if (badge) badge.textContent = `Auto-refresh: ${refreshSeconds}s`;
+    }
+    function startAutoRefresh() {
+      updateRefreshBadge();
+      setInterval(() => {
+        refreshSeconds--;
+        updateRefreshBadge();
+        if (refreshSeconds <= 0) {
+          location.reload();
+        }
+      }, 1000);
+    }
+    document.addEventListener('DOMContentLoaded', startAutoRefresh);
+  </script>
+</head>
+<body>
+  <div style="position: absolute; top: 24px; right: 32px; z-index: 10;">
+    <span id="autoRefreshBadge" style="background: #232136; color: #fff; padding: 10px 18px; border-radius: 24px; font-size: 1.2em; font-weight: bold; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">Auto-refresh: 30s</span>
+  </div>
+  <div class="container">
+    <div class="header">%PROJECT_NAME%</div>
+    <div class="version">Version %VERSION%</div>
+    
+    <div class="nav-section">
+      <a href="/switch" class="nav-button">🔄 Antenna Switch Control</a>
+    </div>
+
+    <div class="status-row">
+      <!-- Network Status Section -->
+      <div class="section">
+        <h2>📊 Network Status</h2>
+        <div class="info-grid">
+          <span class="info-label">IP Address:</span>
+          <span class="info-value">%IP%</span>
+          <span class="info-label">UDP Discovery:</span>
+          <span class="info-value status-listening">Listening on port 4210</span>
+          <span class="info-label">WebSocket Server:</span>
+          <span class="info-value" id="ws-server">%WS_SERVER%</span>
+          <span class="info-label">WS Connection:</span>
+          <span id="wsConnectionStatus" class="status-ws-disconnected">Disconnected</span>
+        </div>
+      </div>
+
+      <!-- System Information Section -->
+      <div class="section">
+        <h2>🖥️ System Information</h2>
+        <div class="info-grid">
+          <span class="info-label">Chip ID:</span>
+          <span class="info-value">%CHIP_ID%</span>
+          <span class="info-label">CPU Frequency:</span>
+          <span class="info-value">%CPU_FREQ% MHz</span>
+          <span class="info-label">Free Heap:</span>
+          <span class="info-value">%FREE_HEAP%</span>
+          <span class="info-label">Uptime:</span>
+          <span class="info-value">%UPTIME%</span>
+        </div>
+      </div>
+
+      <!-- Memory & Storage Section -->
+      <div class="section">
+        <h2>💾 Memory & Storage</h2>
+        <div class="info-grid">
+          <span class="info-label">Flash Size:</span>
+          <span class="info-value">%FLASH_TOTAL%</span>
+          <span class="info-label">Sketch Size:</span>
+          <span class="info-value">%SKETCH_USED%</span>
+          <span class="info-label">Free Space:</span>
+          <span class="info-value">1280 KB</span>
+        </div>
+      </div>
+
+      <!-- CI-V Information Section (renamed from Configuration) -->
+      <div class="section">
+        <h2>📡 CI-V Information</h2>
+        <div class="info-grid">
+          <span class="info-label">Baud Rate:</span>
+          <span class="info-value">%CIV_BAUD%</span>
+          <span class="info-label">CI-V Address:</span>
+          <span class="info-value" id="civAddressDisplay">%CIV_ADDRESS%</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="main-content">
+      <!-- Configuration Section -->
+      <div class="section config-section">
+        <h2>⚙️ Configuration</h2>
+        
+        <div class="config-controls">
+          <div>
+            <label class="info-label">Switch Model:</label>
+            <div class="radio-group">
+              <label>
+                <input type="radio" name="rcs_type" value="0" id="modelRCS8" %MODEL8_CHECKED%>
+                RCS-8
+              </label>
+              <label>
+                <input type="radio" name="rcs_type" value="1" id="modelRCS10" %MODEL10_CHECKED%>
+                RCS-10
+              </label>
+            </div>
+          </div>
+          
+          <div>
+            <label class="info-label" for="deviceNumber">Device Number:</label>
+            <input type="number" id="deviceNumber" class="device-number-input" min="1" max="4" value="%DEVICE_NUMBER%">
+          </div>
+        </div>
+
+        <h3>Antenna Names</h3>
+        <div class="antenna-inputs">
+          <div class="antenna-group">
+            <label class="info-label">Antenna #1:</label>
+            <input type="text" class="antenna-input" id="ant1" value="%ANT1%">
+          </div>
+          <div class="antenna-group">
+            <label class="info-label">Antenna #2:</label>
+            <input type="text" class="antenna-input" id="ant2" value="%ANT2%">
+          </div>
+          <div class="antenna-group">
+            <label class="info-label">Antenna #3:</label>
+            <input type="text" class="antenna-input" id="ant3" value="%ANT3%">
+          </div>
+          <div class="antenna-group">
+            <label class="info-label">Antenna #4:</label>
+            <input type="text" class="antenna-input" id="ant4" value="%ANT4%">
+          </div>
+          <div class="antenna-group">
+            <label class="info-label">Antenna #5:</label>
+            <input type="text" class="antenna-input" id="ant5" value="%ANT5%">
+          </div>
+          <div class="antenna-group antenna-rcs10-only">
+            <label class="info-label">Antenna #6:</label>
+            <input type="text" class="antenna-input" id="ant6" value="%ANT6%">
+          </div>
+          <div class="antenna-group antenna-rcs10-only">
+            <label class="info-label">Antenna #7:</label>
+            <input type="text" class="antenna-input" id="ant7" value="%ANT7%">
+          </div>
+          <div class="antenna-group antenna-rcs10-only">
+            <label class="info-label">Antenna #8:</label>
+            <input type="text" class="antenna-input" id="ant8" value="%ANT8%">
+          </div>
+        </div>
+
+        <div class="action-buttons">
+          <button id="restoreDefaults" class="btn btn-danger">🔄 Restore Defaults</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>Half Baked Circuits • Last updated: %TIME%</p>
+      <p>UDP Discovery: Listening for 'ShackMate,&lt;ip&gt;,&lt;port&gt;' broadcasts</p>
+    </div>
+
+    <script>
+      // Function to update antenna input visibility based on RCS type
+      function updateAntennaVisibility() {
+        const rcs8Selected = document.getElementById('modelRCS8').checked;
+        const rcs10OnlyElements = document.querySelectorAll('.antenna-rcs10-only');
+        
+        console.log('Updating antenna visibility. RCS-8 selected:', rcs8Selected);
+        
+        rcs10OnlyElements.forEach(function(element) {
+          if (rcs8Selected) {
+            element.classList.add('hidden');
+            console.log('Hiding antenna element:', element);
+          } else {
+            element.classList.remove('hidden');
+            console.log('Showing antenna element:', element);
+          }
+        });
+      }
+
+      // Initialize visibility on page load
+      document.addEventListener('DOMContentLoaded', function() {
+        console.log('DOM loaded, initializing antenna visibility');
+        updateAntennaVisibility();
+      });
+
+      // Auto-save function
+      function autoSave(paramName, paramValue) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/saveConfig", true);
+        xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
+            console.log("Auto-saved " + paramName + ": " + paramValue);
+          }
+        };
+        xhr.send(encodeURIComponent(paramName) + "=" + encodeURIComponent(paramValue) + "&action=autosave");
+      }
+
+      // Attach event listeners for antenna name inputs
+      document.querySelectorAll('.antenna-input').forEach(function(input) {
+        input.addEventListener('change', function() {
+          autoSave(this.id, this.value);
+        });
+      });
+
+      // Handle radio button changes for Switch Model selection
+      document.getElementById('modelRCS8').addEventListener('change', function() {
+        if (this.checked) {
+          autoSave("rcs_type", 0);
+          updateAntennaVisibility();
+        }
+      });
+      document.getElementById('modelRCS10').addEventListener('change', function() {
+        if (this.checked) {
+          autoSave("rcs_type", 1);
+          updateAntennaVisibility();
+        }
+      });
+
+      // Handle device number input change
+      document.getElementById('deviceNumber').addEventListener('change', function() {
+        autoSave("deviceNumber", this.value);
+        // Update CI-V address display in real-time
+        updateCivAddressDisplay(this.value);
+      });
+
+      // Function to update CI-V address display
+      function updateCivAddressDisplay(deviceNumber) {
+        // Calculate CI-V address: 0xB3 + deviceNumber
+        const civAddress = 0xB3 + parseInt(deviceNumber);
+        const civAddressHex = '0x' + civAddress.toString(16).toUpperCase();
+        document.getElementById('civAddressDisplay').textContent = civAddressHex;
+      }
+
+      // WebSocket connection for live status updates
+      // NOTE: This connection is ONLY to receive status from the ESP.
+      // The ESP's wsClient connects to the ShackMate Server (discovered via UDP),
+      // and ONLY the ESP knows the true wsServer and wsClient status.
+      // The dashboard must never use its own connection info for these fields.
+      let ws;
+      let discoveredIP = null;
+      let discoveredPort = null;
+
+      function discoverWebSocketEndpoint() {
+        // Always connect to the ESP's own WebSocket server for dashboard updates
+        discoveredIP = location.hostname;
+        discoveredPort = 4000;
+        connectWebSocket();
+      }
+
+      function connectWebSocket() {
+        if (!discoveredIP || !discoveredPort) {
+          discoveredIP = location.hostname;
+          discoveredPort = 4000;
+        }
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = protocol + '//' + discoveredIP + ':' + discoveredPort + '/ws';
+        ws = new WebSocket(wsUrl);
+        ws.onopen = function() {
+          // Do NOT update WS Connection badge here; only update on dashboardStatus from ESP
+        };
+        ws.onclose = function() {
+          // Do NOT update WS Connection badge here; only update on dashboardStatus from ESP
+          setTimeout(connectWebSocket, 3000);
+        };
+        ws.onerror = function(error) {
+          // Do NOT update WS Connection badge here; only update on dashboardStatus from ESP
+        };
+        ws.onmessage = function(event) {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'dashboardStatus') {
+              // Only update from the ESP's message
+              document.getElementById('ws-server').textContent = data.wsServer || 'Unknown';
+              updateWsStatus(data.wsStatus || 'Unknown');
+              if (data.civAddress) {
+                document.getElementById('civAddressDisplay').textContent = data.civAddress;
+              }
+            }
+          } catch (e) {
+            // Ignore parse errors
+          }
+        };
+      }
+
+      // --- WebSocket Connection Status Styling ---
+      function updateWsStatus(status) {
+        const statusElement = document.getElementById('wsConnectionStatus');
+        if (statusElement) {
+          if (status === 'Connected') {
+            statusElement.textContent = 'Connected';
+            statusElement.className = 'status-ws-connected';
+          } else if (status === 'Disconnected') {
+            statusElement.textContent = 'Disconnected';
+            statusElement.className = 'status-ws-disconnected';
+          } else {
+            statusElement.textContent = 'Unknown';
+            statusElement.className = 'status-ws-disconnected';
+          }
+        }
+      }
+
+      // On page load, set placeholders for WS Server and Connection
+      document.addEventListener('DOMContentLoaded', function() {
+        updateAntennaVisibility();
+        document.getElementById('ws-server').textContent = 'Unknown';
+        updateWsStatus('Unknown');
+        discoverWebSocketEndpoint();
+      });
+
+      // Restore Defaults functionality
+      document.getElementById('restoreDefaults').addEventListener('click', function() {
+        if (confirm("Are you sure you want to restore defaults and erase stored WiFi credentials? The device will reboot.")) {
+          var xhr = new XMLHttpRequest();
+          xhr.open("POST", "/saveConfig", true);
+          xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+          xhr.onreadystatechange = function() {
+            if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
+              // Reset the input fields to default names
+              for (var i = 1; i <= 8; i++) {
+                document.getElementById("ant" + i).value = "Antenna #" + i;
+              }
+              updateAntennaVisibility();
+              setTimeout(function() {
+                location.reload();
+              }, 1000);
+            }
+          };
+          xhr.send("action=restoreDefaults");
+        }
+      });
+    </script>
+    </div>
+  </body>
+</html>

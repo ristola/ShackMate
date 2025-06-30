@@ -1,0 +1,155 @@
+/* Full window, black background */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background-color: #000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-family: sans-serif;
+  color: #fff;
+}
+
+/* Top Tabs */
+.tabs {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  background-color: #222;
+  padding: 10px;
+  box-sizing: border-box;
+}
+.tab {
+  padding: 8px 16px;
+  text-decoration: none;
+  color: #fff;
+  background-color: #444;
+  border-radius: 4px;
+  transition: background-color 0.3s;
+}
+.tab:hover {
+  background-color: #666;
+}
+.tab.active {
+  background-color: #3399ff;
+  font-weight: bold;
+}
+
+/* Container for the SVG and option buttons */
+.content-container {
+  position: relative; /* So we can absolutely-position elements within it */
+  margin: 20px;
+}
+
+/* FUNCTION BUTTONS (TRANSMIT/TUNER) in SVG */
+.function-button rect {
+  fill: #444;
+  stroke: #999;
+  stroke-width: 1;
+}
+.function-button text {
+  fill: #fff;
+  font-weight: bold;
+}
+
+/* ANTENNA (or ROTOR) BUTTONS in SVG */
+.antenna-button rect {
+  fill: #555;
+  stroke: #999;
+  stroke-width: 1;
+}
+.antenna-button text {
+  fill: #fff;
+  font-weight: bold;
+}
+.antenna-button.selected rect {
+  fill: #3399ff;
+  stroke: #0066cc;
+}
+.antenna-button.selected text {
+  fill: #fff;
+}
+.antenna-button.disabled rect {
+  fill: yellow;
+}
+.antenna-button.disabled text {
+  fill: red;
+  text-decoration: line-through;
+}
+
+/* LED styling */
+.led.off {
+  fill: #ccc; /* Light gray when off */
+}
+.led.on {
+  fill: red;  /* Red when on */
+}
+
+/* Ensure interactive SVG elements receive pointer events */
+.antenna-button, .function-button, .led {
+  pointer-events: all;
+}
+
+/* #antenna-details container absolutely positioned under the LED area */
+#antenna-details {
+  position: absolute;
+  left: 165px;  /* adjust if needed */
+  top: 180px;   /* adjust if needed */
+  width: 800px;
+  text-align: center;
+}
+#antenna-details h2 {
+  margin: 0 0 10px 0;
+  font-size: 23px;
+  color: #ccc;
+}
+/* Buttons container: flex row, spaced with gap */
+#antenna-details .buttons-container {
+  display: flex;
+  justify-content: center;
+  gap: 10px;  /* space between the option buttons */
+}
+/* Shared styling for all option buttons */
+#antenna-details button {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  width: 200px;
+  text-align: center;
+  background-color: orange;
+  color: blue;  /* Bold blue text */
+  border: none;
+  border-radius: 8px;
+}
+
+/* Dropdown menu for option buttons */
+.dropdown-menu {
+  display: none; /* hidden by default */
+  position: absolute;
+  background-color: #222;
+  border: 1px solid #555;
+  padding: 5px;
+  border-radius: 5px;
+  z-index: 9999;
+  max-height: 240px !important; /* adjust as needed */
+  overflow-y: scroll;
+  scrollbar-gutter: stable; 
+}
+.dropdown-menu button {
+  display: block;
+  margin: 8px 0 !important;
+  padding: 5px 10px;
+  font-size: 14px;
+  text-align: left;
+  background-color: #444;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+}
+.dropdown-menu button:hover {
+  background-color: #555;
+}

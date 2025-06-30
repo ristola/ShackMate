@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>%PROJECT_NAME% - Config</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      text-align: center;
+      background-color: #f5f5f5;
+    }
+    .header {
+      font-size: 2em;
+      margin-bottom: 10px;
+      color: #333;
+    }
+    .tabs {
+      overflow: hidden;
+      background-color: #e0e0e0;
+      display: inline-block;
+      margin-bottom: 20px;
+    }
+    .tabs a {
+      float: left;
+      border: 1px solid #ccc;
+      background-color: #ddd;
+      padding: 10px 20px;
+      text-decoration: none;
+      color: #333;
+      margin: 0 5px;
+    }
+    .tabs a:hover {
+      background-color: #ccc;
+    }
+    .tabs a.active {
+      background-color: #bbb;
+      font-weight: bold;
+    }
+    p {
+      margin: 10px 0;
+    }
+    /* CSS for antenna visibility based on RCS type */
+    .antenna-rcs10-only {
+      display: block;
+      transition: opacity 0.3s ease-in-out;
+      opacity: 1;
+    }
+    .antenna-rcs10-only.hidden {
+      display: none;
+      opacity: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">%PROJECT_NAME%</div>
+  <div class="tabs">
+    <a href="/" class="tab">Info</a>
+    <a href="/config" class="tab active">Config</a>
+    <a href="/switch" class="tab">Switch</a>
+    <a href="/about" class="tab">About</a>
+  </div>
+
+  <h1>%PROJECT_NAME%</h1>
+  <h2>Edit Configuration</h2>
+  <p>
+    <label>WebSocket Port:
+      <input type="text" id="tcpPort" value="%WEBSOCKET_PORT%">
+    </label>
+  </p>
+
+  <!-- Inputs displayed without a container box -->
+
+  <p>
+    <label>Antenna #1:
+      <input type="text" class="antenna-input" id="ant1" value="%ANT1%">
+    </label>
+  </p>
+  <p>
+    <label>Antenna #2:
+      <input type="text" class="antenna-input" id="ant2" value="%ANT2%">
+    </label>
+  </p>
+  <p>
+    <label>Antenna #3:
+      <input type="text" class="antenna-input" id="ant3" value="%ANT3%">
+    </label>
+  </p>
+  <p>
+    <label>Antenna #4:
+      <input type="text" class="antenna-input" id="ant4" value="%ANT4%">
+    </label>
+  </p>
+  <p>
+    <label>Antenna #5:
+      <input type="text" class="antenna-input" id="ant5" value="%ANT5%">
+    </label>
+  </p>
+  
+  <!-- RCS-10 Only Antennas -->
+  <div class="antenna-rcs10-only">
+    <hr style="margin: 20px 0; border: 1px solid #ccc;">
+    <p style="font-size: 0.9em; color: #666; margin: 10px 0;">
+      <em>Additional antennas (RCS-10 only):</em>
+    </p>
+  </div>
+  
+  <p class="antenna-rcs10-only">
+    <label>Antenna #6:
+      <input type="text" class="antenna-input" id="ant6" value="%ANT6%">
+    </label>
+  </p>
+  <p class="antenna-rcs10-only">
+    <label>Antenna #7:
+      <input type="text" class="antenna-input" id="ant7" value="%ANT7%">
+    </label>
+  </p>
+  <p class="antenna-rcs10-only">
+    <label>Antenna #8:
+      <input type="text" class="antenna-input" id="ant8" value="%ANT8%">
+    </label>
+  </p>
+  <p>
+    <label>Switch Model:</label>
+    <label>
+      <input type="radio" name="rcs_type" value="0" id="modelRCS8" %MODEL8_CHECKED%>
+      RCS-8
+    </label>
+    <label>
+      <input type="radio" name="rcs_type" value="1" id="modelRCS10" %MODEL10_CHECKED%>
+      RCS-10
+    </label>
+  </p>
+  <p>
+    <label>Device Number:
+      <input type="number" id="deviceNumber" min="1" max="4" value="%DEVICE_NUMBER%">
+    </label>
+  </p>
+  <p>
+    <button id="restoreDefaults" style="padding: 10px 20px;">Restore Defaults</button>
+  </p>
+
+  <script>
+    // Function to update antenna input visibility based on RCS type
+    function updateAntennaVisibility() {
+      const rcs8Selected = document.getElementById('modelRCS8').checked;
+      const rcs10OnlyElements = document.querySelectorAll('.antenna-rcs10-only');
+      
+      console.log('Updating antenna visibility. RCS-8 selected:', rcs8Selected);
+      
+      rcs10OnlyElements.forEach(function(element) {
+        if (rcs8Selected) {
+          // Hide antennas 6-8 for RCS-8
+          element.classList.add('hidden');
+          console.log('Hiding antenna element:', element);
+        } else {
+          // Show all antennas for RCS-10
+          element.classList.remove('hidden');
+          console.log('Showing antenna element:', element);
+        }
+      });
+    }
+
+    // Initialize visibility on page load
+    document.addEventListener('DOMContentLoaded', function() {
+      console.log('DOM loaded, initializing antenna visibility');
+      updateAntennaVisibility();
+    });
+
+    // Auto-save function: sends a POST request to /saveConfig with the updated parameter.
+    function autoSave(paramName, paramValue) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", "/saveConfig", true);
+      xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
+          console.log("Auto-saved " + paramName + ": " + paramValue);
+        }
+      };
+      xhr.send(encodeURIComponent(paramName) + "=" + encodeURIComponent(paramValue) + "&action=autosave");
+    }
+
+    // Attach onchange events for antenna name inputs.
+    document.querySelectorAll('.antenna-input').forEach(function(input) {
+      input.addEventListener('change', function() {
+        autoSave(this.id, this.value);
+      });
+    });
+
+    // Attach onchange event for WebSocket Port input.
+    document.getElementById('tcpPort').addEventListener('change', function() {
+      autoSave("tcp_port", this.value);
+    });
+
+    // Handle radio button change for Switch Model selection (rcs_type)
+    document.getElementById('modelRCS8').addEventListener('change', function() {
+      if (this.checked) {
+        autoSave("rcs_type", 0);
+        updateAntennaVisibility(); // Update visibility when RCS-8 is selected
+      }
+    });
+    document.getElementById('modelRCS10').addEventListener('change', function() {
+      if (this.checked) {
+        autoSave("rcs_type", 1);
+        updateAntennaVisibility(); // Update visibility when RCS-10 is selected
+      }
+    });
+
+    // Handle device number input change
+    document.getElementById('deviceNumber').addEventListener('change', function() {
+      autoSave("deviceNumber", this.value);
+    });
+
+    // Restore Defaults: resets antenna names and erases stored WiFi credentials, then reboots.
+    document.getElementById('restoreDefaults').addEventListener('click', function() {
+      if (confirm("Are you sure you want to restore defaults and erase stored WiFi credentials? The device will reboot.")) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/saveConfig", true);
+        xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
+            // Reset the input fields to default names.
+            for (var i = 1; i <= 8; i++) {
+              document.getElementById("ant" + i).value = "Antenna #" + i;
+            }
+            // Update visibility after restoring defaults
+            updateAntennaVisibility();
+            // Trigger a reboot by reloading the page after a short delay.
+            setTimeout(function() {
+              location.reload();
+            }, 1000);
+          }
+        };
+        xhr.send("action=restoreDefaults");
+      }
+    });
+
+  </script>
+</body>
+</html>

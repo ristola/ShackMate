@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Switch - %PROJECT_NAME%</title>
+  <link rel="stylesheet" href="antenna.css">
+  <style>
+    .back-button {
+      position: absolute;
+      top: 15px;
+      left: 20px;
+      padding: 8px 16px;
+      background: linear-gradient(135deg, #3498db, #2980b9);
+      color: white;
+      text-decoration: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: bold;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      transition: all 0.3s ease;
+      z-index: 1000;
+    }
+    .back-button:hover {
+      background: linear-gradient(135deg, #2980b9, #1abc9c);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+    }
+
+  </style>
+</head>
+<body>
+  <a href="/" class="back-button">← Back to Dashboard</a>
+  <input type="hidden" id="rcsTypeValue" value="%RCS_TYPE%">
+
+  <div class="content-container">
+    <!-- Main SVG container -->
+    <svg width="990" height="525" viewBox="0 0 990 525" xmlns="http://www.w3.org/2000/svg" style="display: inline-block; vertical-align: top;">
+      <!-- Outer border -->
+      <rect x="0" y="0" width="990" height="525" fill="none" pointer-events="none" stroke="#888" stroke-width="1" />
+      <!-- Top black bar -->
+      <rect x="0" y="0" width="990" height="35" fill="black" />
+      <!-- Banner Text changed to ANTENNA SELECTION -->
+      <text x="50%" y="23" font-family="sans-serif" font-size="20" fill="#ccc" font-weight="bold" text-anchor="middle">
+        ANTENNA SELECTION
+      </text>
+      <!-- Narrow gray bar -->
+      <rect x="0" y="35" width="990" height="10" fill="#666" />
+      
+      <!-- OPERATING MODE Section with LED indicators -->
+      <g id="operating-mode" transform="translate(0,45)">
+        <text x="495" y="40" font-family="sans-serif" font-size="23" font-weight="bold" fill="#fff" text-anchor="middle">
+          OPERATING MODE
+        </text>
+        <!-- 14 LED indicators remain unchanged -->
+        <text x="180" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">160m</text>
+        <circle class="led off" data-index="0" cx="180" cy="100" r="8" />
+        <text x="239" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">80m</text>
+        <circle class="led off" data-index="1" cx="239" cy="100" r="8" />
+        <text x="298" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">60m</text>
+        <circle class="led off" data-index="2" cx="298" cy="100" r="8" />
+        <text x="357" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">40m</text>
+        <circle class="led off" data-index="3" cx="357" cy="100" r="8" />
+        <text x="416" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">30m</text>
+        <circle class="led off" data-index="4" cx="416" cy="100" r="8" />
+        <text x="475" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">20m</text>
+        <circle class="led off" data-index="5" cx="475" cy="100" r="8" />
+        <text x="534" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">17m</text>
+        <circle class="led off" data-index="6" cx="534" cy="100" r="8" />
+        <text x="593" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">15m</text>
+        <circle class="led off" data-index="7" cx="593" cy="100" r="8" />
+        <text x="652" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">12m</text>
+        <circle class="led off" data-index="8" cx="652" cy="100" r="8" />
+        <text x="711" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">10m</text>
+        <circle class="led off" data-index="9" cx="711" cy="100" r="8" />
+        <text x="770" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">6m</text>
+        <circle class="led off" data-index="10" cx="770" cy="100" r="8" />
+        <text x="829" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">2m</text>
+        <circle class="led off" data-index="11" cx="829" cy="100" r="8" />
+        <text x="889" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">70cm</text>
+        <circle class="led off" data-index="12" cx="889" cy="100" r="8" />
+        <text x="950" y="70" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fff">23cm</text>
+        <circle class="led off" data-index="13" cx="950" cy="100" r="8" />
+      </g>
+      
+      <!-- Left-side antenna button group (8 buttons) -->
+      <g id="button-group" transform="translate(10,55)">
+        <g id="btnTransmit" class="function-button" data-index="-1" transform="translate(0,0)">
+          <rect width="130" height="33.5" rx="5" />
+          <text x="65" y="16.75" dominant-baseline="middle" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle">
+            TRANSMIT
+          </text>
+        </g>
+        <g id="btnTuner" class="function-button" data-index="-1" transform="translate(0,39)">
+          <rect width="130" height="33.5" rx="5" />
+          <text id="tunerText" x="65" y="16.75" dominant-baseline="middle" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle">
+            TUNER
+          </text>
+        </g>
+        <!-- 8 Antenna Buttons using placeholders -->
+        <g id="ant1" class="antenna-button" data-index="0" transform="translate(0,78)">
+          <rect width="130" height="33.5" rx="5" />
+          <text x="65" y="16.75" dominant-baseline="middle" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle">
+            %ANT1%
+          </text>
+        </g>
+        <g id="ant2" class="antenna-button" data-index="1" transform="translate(0,117)">
+          <rect width="130" height="33.5" rx="5" />
+          <text x="65" y="16.75" dominant-baseline="middle" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle">
+            %ANT2%
+          </text>
+        </g>
+        <g id="ant3" class="antenna-button" data-index="2" transform="translate(0,156)">
+          <rect width="130" height="33.5" rx="5" />
+          <text x="65" y="16.75" dominant-baseline="middle" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle">
+            %ANT3%
+          </text>
+        </g>
+        <g id="ant4" class="antenna-button" data-index="3" transform="translate(0,195)">
+          <rect width="130" height="33.5" rx="5" />
+          <text x="65" y="16.75" dominant-baseline="middle" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle">
+            %ANT4%
+          </text>
+        </g>
+        <g id="ant5" class="antenna-button" data-index="4" transform="translate(0,234)">
+          <rect width="130" height="33.5" rx="5" />
+          <text x="65" y="16.75" dominant-baseline="middle" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle">
+            %ANT5%
+          </text>
+        </g>
+        <g id="ant6" class="antenna-button" data-index="5" transform="translate(0,273)">
+          <rect width="130" height="33.5" rx="5" />
+          <text x="65" y="16.75" dominant-baseline="middle" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle">
+            %ANT6%
+          </text>
+        </g>
+        <g id="ant7" class="antenna-button" data-index="6" transform="translate(0,312)">
+          <rect width="130" height="33.5" rx="5" />
+          <text x="65" y="16.75" dominant-baseline="middle" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle">
+            %ANT7%
+          </text>
+        </g>
+        <g id="ant8" class="antenna-button" data-index="7" transform="translate(0,351)">
+          <rect width="130" height="33.5" rx="5" />
+          <text x="65" y="16.75" dominant-baseline="middle" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle">
+            %ANT8%
+          </text>
+        </g>
+      </g>
+      
+      <!-- TX/RX indicators + selected antenna name -->
+      <g id="indicators" transform="translate(640,65)">
+        <g id="txIndicator">
+          <rect x="0" y="0" width="40" height="20" rx="5" fill="red" />
+          <text id="txIndicatorText" x="20" y="14" font-family="sans-serif" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">
+            TX
+          </text>
+        </g>
+        <g id="rxIndicator" transform="translate(45,0)">
+          <rect x="0" y="0" width="40" height="20" rx="5" fill="green" />
+          <text id="rxIndicatorText" x="20" y="14" font-family="sans-serif" font-size="12" fill="#fff" text-anchor="middle" font-weight="bold">
+            RX
+          </text>
+        </g>
+        <text id="selectedAntennaName" x="100" y="15" font-family="sans-serif" font-size="18" fill="#fff">
+          Port -: No Antenna Selected
+        </text>
+      </g>
+    </svg>
+
+    <!-- Option Buttons placed under the LED area -->
+    <div id="antenna-details">
+      <h2>ANTENNA DETAILS</h2>
+      <div class="buttons-container">
+        <button id="antennaTypeButton">TYPE: None</button>
+        <button id="antennaStyleButton">STYLE: None</button>
+        <button id="antennaPolButton">POL: None</button>
+        <button id="antennaMfgButton">MFG: None</button>
+      </div>
+      <div id="typeDropdown" class="dropdown-menu"></div>
+      <div id="styleDropdown" class="dropdown-menu"></div>
+      <div id="polDropdown" class="dropdown-menu"></div>
+      <div id="mfgDropdown" class="dropdown-menu"></div>
+    </div>
+  </div>
+  
+  <!-- Reference to updated JS file -->
+  <script src="antenna.js"></script>
+</body>
+</html>

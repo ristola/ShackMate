@@ -1,0 +1,281 @@
+/* rotor.css */
+
+/* ==================== */
+/*   CSS Custom Props   */
+/* ==================== */
+:root {
+  --bg-color: #000;
+  --header-bg: #666;
+  --primary-font: sans-serif;
+  --button-border: #999;
+  --button-hover-bg: #555;
+  --toggle-auto: red;
+  --toggle-manual: blue;
+  --satellite-color: yellow;
+  --text-white: #fff;
+  --meter-bg: black;
+  --meter-stroke: white;
+  --tick-stroke: white;
+  --pointer-stroke: red;
+  --target-display: blue;
+}
+
+/* ==================== */
+/*   General Styles     */
+/* ==================== */
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-color);
+  font-family: var(--primary-font);
+}
+
+svg {
+  display: block;
+  margin: 0 auto;
+}
+
+text {
+  user-select: none;
+}
+
+/* ==================== */
+/*   Header and Top Bar */
+/* ==================== */
+#mainSvg > rect:first-of-type {
+  fill: var(--bg-color);
+}
+
+#mainSvg > rect:nth-of-type(2) {
+  fill: var(--header-bg);
+}
+
+/* ==================== */
+/*   Satellite Indicator */
+/* ==================== */
+#satIndicatorGroup {
+  display: none;
+}
+
+#satIndicatorGroup g {
+}
+
+#satIndicatorGroup text {
+  fill: var(--satellite-color);
+  font-size: 14px;
+  font-weight: bold;
+  font-family: var(--primary-font);
+}
+
+/* Right-side Satellite Info */
+#satInfo {
+  display: none;
+  transform: translate(700px, 20px);
+}
+
+#satInfo text {
+  fill: var(--satellite-color);
+  font-size: 16px;
+}
+
+/* ==================== */
+/*   Toggle Buttons     */
+/* ==================== */
+#toggle-button {
+  cursor: pointer;
+  transition: fill 0.3s;
+}
+
+#toggle-button rect {
+  stroke: var(--button-border);
+  stroke-width: 1;
+}
+
+#toggle-button text {
+  fill: var(--text-white);
+  font-size: 14px;
+  text-anchor: middle;
+}
+
+/* Rotors Toggle Button */
+#rotors-toggle-button {
+  cursor: pointer;
+  transition: fill 0.3s;
+}
+
+#rotors-toggle-button rect {
+  fill: green;
+  stroke: var(--button-border);
+  stroke-width: 1;
+}
+
+#rotors-toggle-button text {
+  fill: var(--text-white);
+  font-size: 12px;
+  text-anchor: middle;
+}
+
+/* Calibrate Button */
+#cal-button {
+  cursor: pointer;
+  transition: fill 0.3s;
+}
+
+#cal-button rect {
+  fill: orange;
+  stroke: var(--button-border);
+  stroke-width: 1;
+}
+
+#cal-button text {
+  fill: var(--text-white);
+  font-size: 14px;
+  text-anchor: middle;
+}
+
+/* ==================== */
+/*   Memory Buttons (M1–M6) */
+/* ==================== */
+#m-buttons .m-button {
+  cursor: pointer;
+  transition: fill 0.2s;
+}
+
+#m-buttons .m-button rect {
+  fill: #555;
+  stroke: var(--button-border);
+  stroke-width: 1;
+}
+
+#m-buttons .m-button text {
+  fill: var(--text-white);
+  font-size: 14px;
+  text-anchor: middle;
+}
+
+#m-buttons .m-button:hover rect {
+  fill: var(--button-hover-bg);
+}
+
+/* ==================== */
+/*   AZ and EL Meters   */
+/* ==================== */
+#analogAZGroup rect,
+#digitalAZGroup rect,
+#analogELGroup rect,
+#digitalELGroup rect {
+  fill: var(--meter-bg);
+  stroke: var(--meter-stroke);
+  stroke-width: 2;
+}
+
+#analogAZGroup ellipse,
+#digitalAZGroup ellipse,
+#analogELGroup ellipse,
+#digitalELGroup ellipse {
+  stroke: none;
+}
+
+#analogAZGroup text,
+#digitalAZGroup text,
+#analogELGroup text,
+#digitalELGroup text {
+  user-select: none;
+}
+
+#targetAZDisplayAnalog,
+#targetAZDisplayDigital,
+#targetELDisplayAnalog,
+#targetELDisplayDigital {
+  font-size: 18px;
+  fill: var(--target-display);
+  font-weight: bold;
+}
+
+/* ==================== */
+/*   Scale (Ticks, Labels, Pointer Lines)   */
+/* ==================== */
+#azTicks line,
+#elTicks line {
+  stroke: var(--tick-stroke);
+}
+
+#azLabels text,
+#elLabels text {
+  fill: var(--text-white);
+  font-size: 16px;
+  font-weight: bold;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+#azPointerLine,
+#elPointerLine {
+  stroke: var(--pointer-stroke);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+/* ==================== */
+/*   Plot Indicator     */
+/* ==================== */
+#posPlot text {
+  fill: green;
+  font-size: 14px;
+  text-anchor: middle;
+}
+
+/* ==================== */
+/*   Numeric Keypad     */
+/* ==================== */
+#keypadGroup {
+  display: none;
+}
+
+#keypadGroup rect {
+  fill: var(--meter-bg);
+  stroke: var(--meter-stroke);
+  stroke-width: 2;
+}
+
+#keypadPrompt {
+  fill: var(--text-white);
+  font-size: 16px;
+  text-anchor: start;
+}
+
+#keypadDisplay {
+  fill: var(--text-white);
+  font-size: 20px;
+  text-anchor: end;
+}
+
+.keypad-btn rect {
+  fill: blue !important;
+  rx: 5;
+}
+
+.keypad-btn text {
+  fill: var(--text-white) !important;
+  font-size: 20px;
+  text-anchor: middle;
+}
+
+.keypad-btn[data-value="CLEAR"] text,
+.keypad-btn[data-value="ENTER"] text {
+  font-size: 14px;
+}
+
+/* ==================== */
+/*   Additional Styles  */
+/* ==================== */
+#toggle-button:hover rect,
+#cal-button:hover rect,
+#rotors-toggle-button:hover rect,
+#m-buttons .m-button:hover rect {
+  opacity: 0.8;
+}
+
+rect, circle, text {
+  transition: all 0.3s ease;
+}

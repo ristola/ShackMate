@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../../../../Github/PlatformIO/WiFi-CI-V"
+		},
+		{
+			"name": "Wireless CI-V",
+			"path": ".."
+		}
+	],
+	"settings": {}
+}
