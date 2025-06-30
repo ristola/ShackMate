@@ -182,7 +182,7 @@ void checkAndAutoOta()
   wsServer.textAll(String("[DEBUG] OTA: Received payload: ") + payload);
   http.end();
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<2048> doc;
   DeserializationError err = deserializeJson(doc, payload);
   if (err)
   {
@@ -1367,6 +1367,8 @@ document.addEventListener('DOMContentLoaded', function() {
                         if (m && m[1]) version = m[1];
                     }
                 }
+                // Force version to be a string if it's a number (for safety)
+                if (version !== null && typeof version !== "string") version = String(version);
                 // Log discovered version and raw status message to browser console
                 console.log("[OTA] Discovered Version from /ota_status:", version, "| Raw message:", msg);
                 let line = "";
@@ -1432,12 +1434,16 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(resp => {
                 clearTimeout(timeout);
                 // ---- ADDED LOG ----
-                if(resp.server_version)
-                    console.log("[OTA] Server JSON parsed, Firmware Version:", resp.server_version);
+                let server_version = resp.server_version;
+                // Ensure server_version is always a string
+                if (server_version !== null && typeof server_version !== "string")
+                    server_version = String(server_version);
+                if(server_version)
+                    console.log("[OTA] Server JSON parsed, Firmware Version:", server_version);
                 // (Removed logging of firmware_filename/fs_filename after manual check)
 
                 // Unified OTA status display and button toggle
-                const statusHtml = `Latest version: ${resp.server_version}<br><span style="color:#666;font-size:0.95em;">Last Updated: ${resp.last_check}</span>`;
+                const statusHtml = `Latest version: ${server_version}<br><span style="color:#666;font-size:0.95em;">Last Updated: ${resp.last_check}</span>`;
                 document.getElementById('otaStatus').innerHTML = statusHtml;
                 document.getElementById('manualUpdateBtn').style.display = resp.update_available ? 'inline-block' : 'none';
                 // No else: always show the status card above
@@ -1726,26 +1732,22 @@ void setup()
   // OTA update endpoint (manual trigger, improved version)
   httpServer.on("/ota_update", HTTP_POST, [](AsyncWebServerRequest *req) {
       dashboardPaused = true;
-      wsServer.textAll("[DEBUG] OTA: /ota_update handler called");
+      wsServer.closeAll(); // Disconnect all WebSocket clients during OTA
       Serial.println("[OTA] /ota_update handler called");
-      // Disconnect remote WebSocket client before OTA
       webClient.disconnect();
       Serial.println("[OTA] Disconnected remote WebSocket client for OTA");
       if (latestFwFile.isEmpty()) {
-          wsServer.textAll("[OTA] No firmware file available");
           Serial.println("[OTA] No firmware file available");
           dashboardPaused = false;
-          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_init(10, true);
           esp_task_wdt_reset();
           req->send(400, "text/plain", "No firmware file available");
           return;
       }
       String url = String(OTA_FW_BASE_URL) + latestFwFile;
-      wsServer.textAll(String("[OTA] Flashing: ") + latestFwFile); // For web UI below progress bar
-      // "[OTA] Flashing: ..." is kept for web UI only, but log to serial for debug
+      // wsServer.textAll(String("[OTA] Flashing: ") + latestFwFile); // disabled for OTA
       Serial.print("[OTA] Flashing: ");
       Serial.println(latestFwFile);
-      wsServer.textAll("[DEBUG] OTA: Preparing to download firmware: " + url);
       Serial.print("[DEBUG] OTA: Preparing to download firmware: ");
       Serial.println(url);
 
@@ -1758,51 +1760,44 @@ void setup()
       client.setInsecure();
       http.begin(client, url);
 
-      wsServer.textAll("[DEBUG] OTA: HTTP connection being established to: " + url);
       Serial.print("[DEBUG] OTA: HTTP connection being established to: ");
       Serial.println(url);
 
       int httpCode = http.GET();
-      wsServer.textAll("[DEBUG] OTA: HTTP GET status code received: " + String(httpCode));
       Serial.print("[DEBUG] OTA: HTTP GET status code received: ");
       Serial.println(httpCode);
       if (httpCode != HTTP_CODE_OK) {
-          wsServer.textAll("[OTA] HTTP GET failed, code: " + String(httpCode));
           Serial.print("[OTA] HTTP GET failed, code: ");
           Serial.println(httpCode);
           http.end();
           dashboardPaused = false;
-          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_init(10, true);
           esp_task_wdt_reset();
           return;
       }
       int contentLength = http.getSize();
       if (contentLength <= 0) {
-          wsServer.textAll("[OTA] Invalid content length: " + String(contentLength));
           Serial.print("[OTA] Invalid content length: ");
           Serial.println(contentLength);
           http.end();
           dashboardPaused = false;
-          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_init(10, true);
           esp_task_wdt_reset();
           return;
       }
-      wsServer.textAll("[DEBUG] OTA: Starting update, contentLength = " + String(contentLength));
       Serial.print("[DEBUG] OTA: Starting update, contentLength = ");
       Serial.println(contentLength);
-      esp_task_wdt_init(30, true); // Set WDT to 30 seconds for OTA
+      esp_task_wdt_init(30, true);
       esp_task_wdt_reset();
       if (!Update.begin(contentLength)) {
-          wsServer.textAll("[OTA] Update.begin failed: " + String(Update.errorString()));
           Serial.print("[OTA] Update.begin failed: ");
           Serial.println(Update.errorString());
           http.end();
           dashboardPaused = false;
-          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_init(10, true);
           esp_task_wdt_reset();
           return;
       }
-      wsServer.textAll("[DEBUG] OTA: Update.begin succeeded");
       Serial.println("[DEBUG] OTA: Update.begin succeeded");
 
       WiFiClient *stream = http.getStreamPtr();
@@ -1810,8 +1805,10 @@ void setup()
       uint8_t buffer[bufferSize];
       int written = 0;
       int lastReportedOffset = 0;
+      int lastPctSent = -1;
       while (http.connected() && written < contentLength) {
           esp_task_wdt_reset();
+          wsServer.cleanupClients();
           size_t available = stream->available();
           if (available) {
               size_t toRead = available > bufferSize ? bufferSize : available;
@@ -1819,52 +1816,44 @@ void setup()
               if (bytesRead > 0) {
                   size_t writeRes = Update.write(buffer, bytesRead);
                   written += bytesRead;
-                  if ((written - lastReportedOffset) >= 1024 || written == contentLength) {
-                      wsServer.textAll("[DEBUG] OTA: Written chunk, offset now " + String(written) + " bytes");
-                      Serial.print("[DEBUG] OTA: Written chunk, offset now ");
-                      Serial.print(written);
-                      Serial.println(" bytes");
-                      lastReportedOffset = written;
-                  }
+                  // OTA progress WebSocket messages (progress update)
                   uint8_t pct = (written * 100) / contentLength;
-                  wsServer.textAll(String("{\"ota_progress\":") + pct + "}");
-                  // Progress percentage JSON is for web UI; also log progress to serial
+                  wsServer.textAll(String("[OTA] OTA Progress: ") + String(pct) + "%");
+                  wsServer.textAll(String("{\"ota_progress\":") + String(pct) + "}");
+                  lastPctSent = pct;
                   Serial.print("[OTA] Progress: ");
                   Serial.print(pct);
                   Serial.println("%");
               }
           }
+          yield();
           delay(1);
       }
-      wsServer.textAll("[DEBUG] OTA: Finished download loop");
       Serial.println("[DEBUG] OTA: Finished download loop");
-      wsServer.textAll("[DEBUG] OTA: Calling Update.end");
       Serial.println("[DEBUG] OTA: Calling Update.end");
       if (Update.end(true)) {
-          wsServer.textAll("[OTA] Update success, rebooting...");
+          // wsServer.textAll("[OTA] Update success, rebooting..."); // disabled for OTA
           Serial.println("[OTA] Update success, rebooting...");
           http.end();
-          // Reconnect remote WebSocket client after OTA (if discovery info is available)
           if (!lastDiscoveredIP.isEmpty() && !lastDiscoveredPort.isEmpty()) {
             Serial.println("[OTA] Reconnecting remote WebSocket client after OTA");
             webClient.begin(lastDiscoveredIP, lastDiscoveredPort.toInt(), "/");
           }
           dashboardPaused = false;
-          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_init(10, true);
           esp_task_wdt_reset();
           ESP.restart();
       } else {
-          wsServer.textAll(String("[OTA] Update failed: ") + String(Update.errorString()));
+          // wsServer.textAll(String("[OTA] Update failed: ") + String(Update.errorString())); // disabled for OTA
           Serial.print("[OTA] Update failed: ");
           Serial.println(Update.errorString());
           http.end();
-          // Reconnect remote WebSocket client after OTA (if discovery info is available)
           if (!lastDiscoveredIP.isEmpty() && !lastDiscoveredPort.isEmpty()) {
             Serial.println("[OTA] Reconnecting remote WebSocket client after OTA");
             webClient.begin(lastDiscoveredIP, lastDiscoveredPort.toInt(), "/");
           }
           dashboardPaused = false;
-          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_init(10, true);
           esp_task_wdt_reset();
       }
   });
