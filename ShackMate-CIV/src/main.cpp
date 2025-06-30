@@ -6,9 +6,8 @@
 bool allowOta = false;
 String latestFwVersion = "";
 String otaStatusMsg = "No updates found";
-#define OTA_VERSION_URL "http://your-server/path/version.json"
-#define OTA_FW_BASE_URL "http://your-server/path/"
-
+#define OTA_VERSION_URL "https://ristola.github.io/ShackMate/ShackMate-CIV/firmware/version.json"
+#define OTA_FW_BASE_URL "https://ristola.github.io/ShackMate/ShackMate-CIV/firmware/"
 #include <stdint.h>
 // -------------------------------------------------------------------------
 // Discovery packet timestamp (for clearing discovery info after timeout)
@@ -130,50 +129,64 @@ void addMessageToCache(const String &hex)
 AsyncWebServer httpServer(80);
 AsyncWebSocket wsServer("/ws");
 
-void checkAndAutoOta()
-{
-  if (!allowOta)
-    return;
+void checkAndAutoOta() {
+  if (!allowOta) return;
+
   HTTPClient http;
-  http.setTimeout(4000); // 4s timeout
+  http.setTimeout(4000);
   http.begin(OTA_VERSION_URL);
+
   int httpCode = http.GET();
-  if (httpCode == 200)
-  {
-    String payload = http.getString();
-    StaticJsonDocument<512> doc;
-    DeserializationError err = deserializeJson(doc, payload);
-    if (err)
-    {
-      otaStatusMsg = "No updates found";
-      latestFwVersion.clear();
-    }
-    else
-    {
-      latestFwVersion = doc["version"] | "";
-      String fwFile = doc["firmware_filename"] | "";
-      if (!latestFwVersion.isEmpty() && !fwFile.isEmpty())
-      {
-        otaStatusMsg = "Latest Firmware: " + latestFwVersion;
-        if (String(VERSION) != latestFwVersion)
-        {
-          wsServer.textAll("{\"event\":\"ota_start\",\"new_version\":\"" + latestFwVersion + "\"}");
-          WiFiClient client;
-          httpUpdate.update(client, OTA_FW_BASE_URL + fwFile);
-        }
-      }
-      else
-      {
-        otaStatusMsg = "No updates found";
-      }
-    }
-  }
-  else
-  {
+  if (httpCode != 200) {
     otaStatusMsg = "No updates found";
     latestFwVersion.clear();
+    http.end();
+    return;
   }
+
+  String payload = http.getString();
   http.end();
+
+  StaticJsonDocument<512> doc;
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err) {
+    otaStatusMsg = "No updates found";
+    latestFwVersion.clear();
+    return;
+  }
+
+  latestFwVersion = doc["version"] | "";
+  String fwFile = doc["firmware_filename"] | "";
+  String fsFile = doc["filesystem_filename"] | "";
+
+  if (latestFwVersion.isEmpty() || fwFile.isEmpty()) {
+    otaStatusMsg = "No updates found";
+    return;
+  }
+
+  otaStatusMsg = "Latest Firmware: " + latestFwVersion;
+
+  if (String(VERSION) == latestFwVersion) {
+    // Already up to date
+    return;
+  }
+
+  WiFiClient client;
+
+  // Filesystem OTA is not supported via httpUpdate; skip this step.
+  if (!fsFile.isEmpty()) {
+    DBG_PRINTLN("Filesystem OTA update requested, but not supported via httpUpdate. Skipping...");
+    // Optionally set otaStatusMsg = "Filesystem OTA not supported";
+    // Or ignore completely.
+  }
+
+  otaStatusMsg = "Updating Firmware...";
+  t_httpUpdate_return fwRet = httpUpdate.update(client, OTA_FW_BASE_URL + fwFile);
+  if (fwRet == HTTP_UPDATE_OK) {
+    // Update success, device will reboot automatically
+  } else {
+    otaStatusMsg = "Firmware update failed";
+  }
 }
 // Helper to get number of connected /ws WebSocket clients
 size_t getWsClientCount()
@@ -510,9 +523,10 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
       setRgb(255, 0, 0); // RED if WiFi lost
     }
     connectionState = DISCOVERING;
-    lastDiscoveredIP = "";
-    lastDiscoveredPort = "";
-    lastDiscoveryPacket = 0;
+    // Do NOT clear lastDiscoveredIP or lastDiscoveredPort here!
+    // lastDiscoveredIP = "";
+    // lastDiscoveredPort = "";
+    // lastDiscoveryPacket = 0;
     broadcastStatus();
     return;
   }
@@ -925,6 +939,7 @@ void core1UdpOtpTask(void *parameter)
 // -------------------------------------------------------------------------
 String generateInfoPage()
 {
+  String wsServerField = (lastDiscoveredIP.length() > 0 ? lastDiscoveredIP + ":" + lastDiscoveredPort : "Not discovered");
   String html = R"(<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1053,7 +1068,8 @@ String generateInfoPage()
                 </div>
                 <div class="info-row">
                     <span class="info-label">WebSocket Server:</span>
-                    <span class="info-value" id="ws-server-field">" + (lastDiscoveredIP.length() > 0 ? lastDiscoveredIP + ":" + lastDiscoveredPort : "Not discovered") + R"(</span>
+                    <span class="info-value" id="ws-server-field">)" +
+                wsServerField + R"(</span>
                 </div>
                 <div class="info-row">
                     <span class="info-label">WS Connection:</span>
@@ -1157,7 +1173,10 @@ String generateInfoPage()
             </div>
         </div>
         <div class="card">
-          <h3><span style="font-size:1.5em;">🔄</span> Automatic Updates</h3>
+          <h3>
+            <span id="otaIcon" style="font-size:1.5em;vertical-align:middle;display:inline-block;line-height:1;cursor:pointer;" title="Click to check and update firmware">🔄</span>
+            Automatic Updates
+          </h3>
           <div class="info-row">
             <span class="info-label">Allow Automatic Updates:</span>
             <span class="info-value">
@@ -1215,6 +1234,35 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     loadOtaStatus();
     setInterval(loadOtaStatus, 30000);
+    // Update timestamp every second
+    function updateTimestamp() {
+        let tsElem = document.querySelector('.timestamp');
+        if (tsElem) {
+            let d = new Date();
+            tsElem.textContent = d.toLocaleTimeString();
+        }
+    }
+    setInterval(updateTimestamp, 1000);
+    updateTimestamp();
+    // Add event handler for OTA icon
+    document.getElementById('otaIcon').addEventListener('click', function() {
+        var icon = this;
+        icon.style.opacity = "0.6";
+        icon.style.pointerEvents = "none";
+        document.getElementById('otaStatus').innerText = "Checking for updates...";
+        fetch('/ota_trigger', {method: 'POST'})
+            .then(r => r.text())
+            .then(msg => {
+                document.getElementById('otaStatus').innerText = msg;
+            })
+            .catch(() => {
+                document.getElementById('otaStatus').innerText = "Update failed or not allowed";
+            })
+            .finally(() => {
+                icon.style.opacity = "";
+                icon.style.pointerEvents = "";
+            });
+    });
 });
 
 function updateWsStatus(status) {
@@ -1258,6 +1306,21 @@ function connectWS() {
                 } else {
                     wsServerElem.textContent = 'Not discovered';
                 }
+            }
+            // Update stat fields
+            if (data.serial1_frames !== undefined && data.serial1_valid !== undefined && data.serial1_invalid !== undefined && data.serial1_broadcast !== undefined) {
+                document.getElementById('serial1-stats-values').innerHTML =
+                    `&#x2705; ${data.serial1_valid} / &#x274C; ${data.serial1_invalid} &nbsp;|&nbsp; &#x1F4E2; ${data.serial1_broadcast}`;
+            }
+            if (data.serial2_frames !== undefined && data.serial2_valid !== undefined && data.serial2_invalid !== undefined && data.serial2_broadcast !== undefined) {
+                document.getElementById('serial2-stats-values').innerHTML =
+                    `&#x2705; ${data.serial2_valid} / &#x274C; ${data.serial2_invalid} &nbsp;|&nbsp; &#x1F4E2; ${data.serial2_broadcast}`;
+            }
+            if (data.ws_rx !== undefined && data.ws_tx !== undefined) {
+                document.getElementById('ws-stats-values').textContent = `RX ${data.ws_rx} / TX ${data.ws_tx}`;
+            }
+            if (data.ws_dup !== undefined) {
+                document.getElementById('ws-dup').textContent = data.ws_dup;
             }
         } catch (e) {
             // Not a JSON status message, ignore
@@ -1436,6 +1499,16 @@ void setup()
       } });
   httpServer.on("/ota_status", HTTP_GET, [](AsyncWebServerRequest *req)
                 { req->send(200, "text/plain", otaStatusMsg); });
+  httpServer.on("/ota_trigger", HTTP_POST, [](AsyncWebServerRequest *req)
+  {
+      if (!allowOta) {
+          req->send(403, "text/plain", "Automatic updates not enabled");
+          return;
+      }
+      otaStatusMsg = "Checking for updates...";
+      checkAndAutoOta();
+      req->send(200, "text/plain", otaStatusMsg);
+  });
   httpServer.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request)
                 { request->send(204); });
   httpServer.addHandler(&wsServer);
@@ -1462,9 +1535,10 @@ void setup()
   allowOta = preferences.getBool("allow_ota", false);
   preferences.end();
   broadcastStatus();
-  if (allowOta)
-  {
+  static bool hasCheckedFwUpdate = false;
+  if (allowOta && !hasCheckedFwUpdate) {
     checkAndAutoOta();
+    hasCheckedFwUpdate = true;
   }
 
   // Register WebSocket client event handler before any use/begin
@@ -1630,19 +1704,23 @@ void loop()
       }
     }
   }
-  // Timeout: clear discovery info
+  // Timeout: clear discovery info ONLY if not connected
   if (lastDiscoveryPacket && (now - lastDiscoveryPacket > 6000))
   {
-    lastDiscoveredIP = "";
-    lastDiscoveredPort = "";
-    lastDiscoveryPacket = 0;
-    if (connectionState != lastBroadcastedState || lastDiscoveredIP != lastBroadcastedIP || lastDiscoveredPort != lastBroadcastedPort)
+    if (connectionState != CONNECTED)
     {
-      broadcastStatus();
-      lastBroadcastedState = connectionState;
-      lastBroadcastedIP = lastDiscoveredIP;
-      lastBroadcastedPort = lastDiscoveredPort;
+      lastDiscoveredIP = "";
+      lastDiscoveredPort = "";
+      lastDiscoveryPacket = 0;
+      if (connectionState != lastBroadcastedState || lastDiscoveredIP != lastBroadcastedIP || lastDiscoveredPort != lastBroadcastedPort)
+      {
+        broadcastStatus();
+        lastBroadcastedState = connectionState;
+        lastBroadcastedIP = lastDiscoveredIP;
+        lastBroadcastedPort = lastDiscoveredPort;
+      }
     }
+    // If connected, do not clear lastDiscoveredIP/Port
   }
 
   // Connecting state
@@ -1663,6 +1741,14 @@ void loop()
     }
   }
   esp_task_wdt_reset(); // Feed after discovery/connect
+
+  // --- Periodic dashboard status broadcast to all /ws clients ---
+  static unsigned long lastDashboardBroadcast = 0;
+  if (now - lastDashboardBroadcast > 2000)
+  { // every 2 seconds
+    broadcastStatus();
+    lastDashboardBroadcast = now;
+  }
 
   // --- WiFi credential reset with 5 second button hold ---
   static unsigned long wifiResetPressStart = 0;
