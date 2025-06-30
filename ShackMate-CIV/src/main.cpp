@@ -1,13 +1,19 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
+#include <Update.h>
 #include <stdint.h>
 #include <string>
+#include <string>
+#include <HTTPUpdate.h>
 bool allowOta = false;
 String latestFwVersion = "";
 String otaStatusMsg = "No updates found";
-#define OTA_VERSION_URL "https://ristola.github.io/ShackMate/ShackMate-CIV/firmware/version.json"
-#define OTA_FW_BASE_URL "https://ristola.github.io/ShackMate/ShackMate-CIV/firmware/"
+String lastOtaRawPayload = "";
+int lastOtaHttpCode = 0;
+String latestFwFile = "";
+#define OTA_VERSION_URL "https://raw.githubusercontent.com/ristola/ShackMate/main/ShackMate-CIV/firmware/version.json"
+#define OTA_FW_BASE_URL "https://raw.githubusercontent.com/ristola/ShackMate/main/ShackMate-CIV/firmware/"
 #include <stdint.h>
 // -------------------------------------------------------------------------
 // Discovery packet timestamp (for clearing discovery info after timeout)
@@ -73,6 +79,7 @@ Serial 2   GPIO21, GPIO25  User / Free   Yes (I2C pins)
 // -------------------------------------------------------------------------
 #include <WiFi.h>
 #include <WiFiManager.h>
+#include <WiFiClientSecure.h>
 #include <AsyncTCP.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
@@ -143,76 +150,81 @@ String getCurrentTimeString()
   }
   return "Unknown";
 }
-
 void checkAndAutoOta()
 {
   lastFwCheckTime = getCurrentTimeString();
-  if (!allowOta)
-    return;
+  lastOtaRawPayload = "";
+  lastOtaHttpCode = 0;
 
+  WiFiClientSecure githubClient;
+  githubClient.setInsecure(); // For GitHub HTTPS access
   HTTPClient http;
   http.setTimeout(4000);
-  http.begin(OTA_VERSION_URL);
+  http.begin(githubClient, OTA_VERSION_URL);
 
   int httpCode = http.GET();
+  lastOtaHttpCode = httpCode;
   if (httpCode != 200)
   {
-    otaStatusMsg = "No updates found";
-    latestFwVersion.clear();
+    otaStatusMsg = "[OTA] ERROR: Could not reach GitHub (HTTP " + String(httpCode) + ")";
+    otaStatusMsg += " [URL=" OTA_VERSION_URL "]";
+    latestFwVersion = "";
+    lastOtaRawPayload = "";
+    wsServer.textAll(String("[OTA] ") + otaStatusMsg);
+    wsServer.textAll(String("[DEBUG] OTA: ERROR: Could not reach GitHub (HTTP ") + String(httpCode) + ")");
     http.end();
     return;
   }
 
   String payload = http.getString();
+  lastOtaRawPayload = payload;
+  wsServer.textAll(String("[OTA] Received payload: ") + payload);
+  wsServer.textAll(String("[DEBUG] OTA: Received payload: ") + payload);
   http.end();
 
   StaticJsonDocument<512> doc;
   DeserializationError err = deserializeJson(doc, payload);
   if (err)
   {
-    otaStatusMsg = "No updates found";
-    latestFwVersion.clear();
+    otaStatusMsg = "[OTA] JSON parse error: ";
+    otaStatusMsg += err.c_str();
+    otaStatusMsg += " [RAW: " + payload + "]";
+    latestFwVersion = "";
+    wsServer.textAll(String("[OTA] ") + otaStatusMsg);
+    wsServer.textAll(String("[DEBUG] OTA: JSON parse error: ") + String(err.c_str()) + " [RAW: " + payload + "]");
     return;
   }
 
+  // Extract version and filenames from the JSON
   latestFwVersion = doc["version"] | "";
   String fwFile = doc["firmware_filename"] | "";
-  String fsFile = doc["filesystem_filename"] | "";
-
-  if (latestFwVersion.isEmpty() || fwFile.isEmpty())
-  {
-    otaStatusMsg = "No updates found";
-    return;
-  }
+  latestFwFile = fwFile;
 
   otaStatusMsg = "Latest Firmware: " + latestFwVersion;
 
-  if (String(VERSION) == latestFwVersion)
+  if (latestFwVersion.isEmpty() || fwFile.isEmpty())
   {
-    // Already up to date
+    otaStatusMsg = "[OTA] JSON parse error: version or firmware_filename missing! RAW: " + payload;
+    latestFwVersion = "";
+    wsServer.textAll(String("[OTA] ") + otaStatusMsg);
+    wsServer.textAll(String("[DEBUG] OTA: JSON parse error: version or firmware_filename missing! RAW: ") + payload);
     return;
   }
 
-  WiFiClient client;
+  wsServer.textAll(String("[OTA] Parsed version: ") + latestFwVersion + ", firmware_filename: " + fwFile);
+  wsServer.textAll(String("[DEBUG] OTA: Parsed version: ") + latestFwVersion + ", firmware_filename: " + fwFile);
 
-  // Filesystem OTA is not supported via httpUpdate; skip this step.
-  if (!fsFile.isEmpty())
+  if (String(VERSION) == latestFwVersion)
   {
-    DBG_PRINTLN("Filesystem OTA update requested, but not supported via httpUpdate. Skipping...");
-    // Optionally set otaStatusMsg = "Filesystem OTA not supported";
-    // Or ignore completely.
+    otaStatusMsg = "Current Firmware: " + latestFwVersion;
+    wsServer.textAll(String("[OTA] ") + otaStatusMsg);
+    wsServer.textAll(String("[DEBUG] OTA: Already up to date: ") + latestFwVersion);
+    return;
   }
 
-  otaStatusMsg = "Updating Firmware...";
-  t_httpUpdate_return fwRet = httpUpdate.update(client, OTA_FW_BASE_URL + fwFile);
-  if (fwRet == HTTP_UPDATE_OK)
-  {
-    // Update success, device will reboot automatically
-  }
-  else
-  {
-    otaStatusMsg = "Firmware update failed";
-  }
+  otaStatusMsg = "Update available: " + latestFwVersion;
+  wsServer.textAll(String("[OTA] ") + otaStatusMsg);
+  wsServer.textAll(String("[DEBUG] OTA: Update available: ") + latestFwVersion);
 }
 // Helper to get number of connected /ws WebSocket clients
 size_t getWsClientCount()
@@ -323,6 +335,9 @@ WebSocketsClient webClient;
 
 bool otaInProgress = false;
 
+// --- Dashboard pause flag for OTA updates ---
+static bool dashboardPaused = false;
+
 // Mutex for protecting shared serial message strings
 portMUX_TYPE serialMsgMutex = portMUX_INITIALIZER_UNLOCKED;
 
@@ -363,9 +378,6 @@ uint32_t getSketchSize();
 uint32_t getFreeSketchSpace();
 float readInternalTemperature();
 
-// Prototype for OTA update check helper
-String checkOtaUpdateAvailable(String &serverVersion, String &fwFile);
-
 // Task function for CI-V/UDP/TCP processing (runs on Core 1)
 // myTaskDebug will be run on Core 1 (CI-V/UDP only)
 void myTaskDebug(void *parameter);
@@ -392,44 +404,6 @@ String toHexUpper(const char *data, int len)
     }
   }
   return String(hexStr);
-}
-
-// --- OTA update check helper (returns status, server_version, and sets latestFwVersion) ---
-String checkOtaUpdateAvailable(String &serverVersion, String &fwFile) {
-  lastFwCheckTime = getCurrentTimeString();
-  serverVersion = "";
-  fwFile = "";
-  HTTPClient http;
-  http.setTimeout(4000);
-  http.begin(OTA_VERSION_URL);
-  int httpCode = http.GET();
-  if (httpCode != 200) {
-    otaStatusMsg = "No updates found";
-    latestFwVersion.clear();
-    http.end();
-    return "no_update";
-  }
-  String payload = http.getString();
-  http.end();
-  StaticJsonDocument<512> doc;
-  DeserializationError err = deserializeJson(doc, payload);
-  if (err) {
-    otaStatusMsg = "No updates found";
-    latestFwVersion.clear();
-    return "no_update";
-  }
-  serverVersion = doc["version"] | "";
-  fwFile = doc["firmware_filename"] | "";
-  if (serverVersion.isEmpty() || fwFile.isEmpty()) {
-    otaStatusMsg = "No updates found";
-    return "no_update";
-  }
-  latestFwVersion = serverVersion;
-  otaStatusMsg = "Latest Firmware: " + latestFwVersion;
-  if (String(VERSION) == latestFwVersion) {
-    return "no_update";
-  }
-  return "update_available";
 }
 
 // -------------------------------------------------------------------------
@@ -638,7 +612,7 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   Serial2.write(buffer, byteCount);
   Serial2.flush();
 
-  Serial.printf("WebSocket -> Serial1 & Serial2: %s\n", msg.c_str());
+  // Serial.printf("WebSocket -> Serial1 & Serial2: %s\n", msg.c_str());
 }
 
 // -------------------------------------------------------------------------
@@ -1242,16 +1216,30 @@ String generateInfoPage()
         <div class="card">
           <h3>
             <span id="otaIcon" style="font-size:1.5em;vertical-align:middle;display:inline-block;line-height:1;cursor:pointer;" title="Click to check and update firmware">🔄</span>
-            Automatic Updates
+            Firmware Updates
           </h3>
           <div class="info-row">
-            <span class="info-label">Allow Automatic Updates:</span>
+            <span class="info-label">Check for Updates:</span>
             <span class="info-value">
               <input type="checkbox" id="autoUpdateCb">
             </span>
           </div>
           <div id="otaStatus" style="margin-top:10px;color:#006;">
             Loading update status...
+          </div>
+          <div style="margin-top:10px;">
+            <button id="manualUpdateBtn" style="margin-right:10px; display: none;">Update Firmware</button>
+            <button id="rebootBtn">Reboot</button>
+          <div id="rebootMsg" style="display:none; position:fixed; top:20%; left:50%; transform:translateX(-50%); background:#ffffff; color:#333333; padding:20px; border:1px solid #555555; border-radius:8px; z-index:1000;">
+            Rebooting! Please wait...
+          </div>
+          <div id="otaModal" style="display:none; position:fixed; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1001;">
+            <div style="background:#fff; padding:20px; border-radius:8px; width:80%; max-width:400px; margin:100px auto; text-align:center;">
+              <div>You are about to re-flash this device.<br>Do not power cycle while updating.</div>
+              <progress id="otaProgress" max="100" value="0" style="width:100%; margin:20px 0;"></progress>
+              <button type="button" id="startUpdateBtn">START UPDATE</button>
+            </div>
+          </div>
           </div>
         </div>
         </div>
@@ -1262,46 +1250,153 @@ String generateInfoPage()
 </script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    // Automatic OTA checkbox (no popup logic)
+    // Real-time updates via WebSocket
+    const ws = new WebSocket(`ws://${window.location.host}/ws`);
+    ws.onmessage = event => {
+      const data = event.data;
+      if (typeof data !== "string") {
+        console.warn("Non-text WS message, ignoring:", data);
+        return;
+      }
+      const msg = data.trim();
+      // Handle plain-text OTA progress lines
+      if (msg.startsWith('[OTA] OTA Progress:')) {
+        console.log("WS OTA progress message:", msg);
+        const m = msg.match(/OTA Progress: (\\d+)%/);
+        if (m) {
+          document.getElementById('otaProgress').value = parseInt(m[1], 10);
+        }
+        return;
+      }
+      // Only attempt JSON.parse on JSON frames
+      if (!msg.startsWith('{')) {
+        console.log("WS Text Message:", msg);
+        return;
+      }
+      let st;
+      try {
+        st = JSON.parse(msg);
+      } catch (e) {
+        console.warn("Invalid JSON from WS:", e, msg);
+        return;
+      }
+      // Network fields, only if present
+      if (st.ip) {
+        document.getElementById('ip-address').textContent = st.ip;
+      }
+      if (st.ws_status) {
+        const wsElem = document.getElementById('ws-connection');
+        wsElem.textContent = st.ws_status.charAt(0).toUpperCase() + st.ws_status.slice(1);
+        wsElem.className = 'status ' + st.ws_status;
+      }
+      // System/version fields
+      if (st.version) {
+        document.getElementById('version').textContent = st.version;
+      }
+      if (st.uptime) {
+        document.getElementById('uptime').textContent = st.uptime;
+      }
+      if (st.chip_id) {
+        document.getElementById('chip-id').textContent = st.chip_id;
+      }
+      // OTA progress if present from JSON
+      if (st.ota_progress !== undefined) {
+        document.getElementById('otaProgress').value = st.ota_progress;
+      }
+      // ---- BEGIN: Live Update of Comm Stats ----
+      if (typeof st.serial1_frames !== "undefined" && typeof st.serial1_valid !== "undefined" && typeof st.serial1_invalid !== "undefined" && typeof st.serial1_broadcast !== "undefined") {
+        document.getElementById('serial1-stats-values').textContent =
+          `✅ ${st.serial1_valid} / ❌ ${st.serial1_invalid} | 📢 ${st.serial1_broadcast}`;
+      }
+      if (typeof st.serial2_frames !== "undefined" && typeof st.serial2_valid !== "undefined" && typeof st.serial2_invalid !== "undefined" && typeof st.serial2_broadcast !== "undefined") {
+        document.getElementById('serial2-stats-values').textContent =
+          `✅ ${st.serial2_valid} / ❌ ${st.serial2_invalid} | 📢 ${st.serial2_broadcast}`;
+      }
+      if (typeof st.ws_rx !== "undefined" && typeof st.ws_tx !== "undefined") {
+        document.getElementById('ws-stats-values').textContent = `RX ${st.ws_rx} / TX ${st.ws_tx}`;
+      }
+      if (typeof st.ws_dup !== "undefined") {
+        document.getElementById('ws-dup').textContent = st.ws_dup;
+      }
+      // ---- END: Live Update of Comm Stats ----
+    };
+
+    // Check/restore checkbox from backend
     fetch('/get_auto_update').then(r => r.text()).then(val => {
-        document.getElementById('autoUpdateCb').checked = val.trim()=="1";
+        document.getElementById('autoUpdateCb').checked = val.trim() == "1";
+        updateOtaStatusDisplay(); // Run once on page load with correct setting
     });
+
     document.getElementById('autoUpdateCb').addEventListener('change', function() {
         fetch('/set_auto_update', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'enable='+(this.checked?1:0)
+            body: 'enable=' + (this.checked ? 1 : 0)
         });
+        updateOtaStatusDisplay(); // Update immediately when toggled
     });
-    function pad2(n){ return n<10 ? '0'+n : n; }
-    function getTimeString() {
-        let d = new Date();
-        return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
-    }
+
     function loadOtaStatus() {
+        console.log("[OTA] Fetching /ota_status from server...");
         fetch('/ota_status')
-            .then(r => r.json())
+            .then(r => {
+                console.log("[OTA] /ota_status response received");
+                return r.json();
+            })
             .then(val => {
+                // --- BEGIN: Extra Debug Logging ---
+                console.log("[OTA] Raw /ota_status JSON:", val);
+                if (typeof val === "object" && val !== null) {
+                    if ("status" in val) console.log("[OTA] OTA Status:", val.status);
+                    if ("version" in val) console.log("[OTA] OTA Parsed Version:", val.version);
+                    if (val.firmware_filename) console.log("[OTA] OTA firmware_filename:", val.firmware_filename);
+                    if (val.fs_filename) console.log("[OTA] OTA fs_filename:", val.fs_filename);
+                    if ("last_check" in val) console.log("[OTA] OTA last_check:", val.last_check);
+                }
+                // --- END: Extra Debug Logging ---
+
                 let msg = val.status ? val.status.trim() : "";
                 let lastCheck = val.last_check ? val.last_check : "Unknown";
-                let line = "";
-                // If version present, show "Firmware: Ver: x.x.x @ lastCheck"
-                let verMatch = msg.match(/Latest Firmware: ([^\s]+)/i);
-                if (verMatch && verMatch[1]) {
-                    line = "Firmware: Ver: " + verMatch[1] + " @ " + lastCheck;
-                } else if (/Ver: ([0-9.]+)/i.test(msg)) {
-                    // e.g. "Firmware: Ver: 1.2.3"
-                    let m = msg.match(/Ver: ([0-9.]+)/i);
-                    line = "Firmware: Ver: " + (m ? m[1] : "") + " @ " + lastCheck;
-                } else {
-                    line = "Firmware check @ " + lastCheck;
+                let version = val.version || null;
+                if (!version) {
+                    let verMatch = msg.match(/Latest Firmware: ([^\s]+)/i);
+                    if (verMatch && verMatch[1]) {
+                        version = verMatch[1];
+                    } else {
+                        let m = msg.match(/Ver: ([0-9.]+)/i);
+                        if (m && m[1]) version = m[1];
+                    }
                 }
-                document.getElementById('otaStatus').innerText = line;
+                // Log discovered version and raw status message to browser console
+                console.log("[OTA] Discovered Version from /ota_status:", version, "| Raw message:", msg);
+                let line = "";
+                if (version) {
+                    line = `Latest version: ${version}`;
+                } else {
+                    line = `Latest version: Unknown`;
+                }
+                line += `<br><span style="color:#666;font-size:0.95em;">Last Updated: ${lastCheck}</span>`;
+                document.getElementById('otaStatus').innerHTML = line;
+                // Show "Update Firmware" button only if version is available and different from current
+                var currentVer = document.getElementById('version').textContent;
+                if (version && version !== currentVer) {
+                    document.getElementById('manualUpdateBtn').style.display = 'inline-block';
+                } else {
+                    document.getElementById('manualUpdateBtn').style.display = 'none';
+                }
+            })
+            .catch(err => {
+                console.error("[OTA] Error fetching /ota_status:", err);
+                document.getElementById('otaStatus').innerHTML = "Error loading update status.";
             });
     }
-    loadOtaStatus();
-    setInterval(loadOtaStatus, 30000);
-    // Update timestamp every second
+
+    function updateOtaStatusDisplay() {
+        // Always refresh status so manual button toggles based on the latest /ota_status
+        loadOtaStatus();
+    }
+
+    // Timestamp for footer
     function updateTimestamp() {
         let tsElem = document.querySelector('.timestamp');
         if (tsElem) {
@@ -1311,117 +1406,109 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     setInterval(updateTimestamp, 1000);
     updateTimestamp();
+
     // Add event handler for OTA icon
     document.getElementById('otaIcon').addEventListener('click', function() {
+        // Manual firmware check/update is now always allowed, regardless of autoUpdateCb state.
         var icon = this;
         icon.style.opacity = "0.6";
         icon.style.pointerEvents = "none";
         document.getElementById('otaStatus').innerText = "Checking for Updates!";
+        // ---- ADDED LOG ----
+        console.log("[OTA] Contacting the Server via /ota_trigger...");
+        // Hide update button at start of manual check
+        document.getElementById('manualUpdateBtn').style.display = 'none';
         let timeout = setTimeout(function() {
             document.getElementById('otaStatus').innerText = "Server Timed Out";
             icon.style.opacity = "";
             icon.style.pointerEvents = "";
         }, 8000); // 8 second timeout
         fetch('/ota_trigger', {method: 'POST'})
-            .then(r => r.json())
+            .then(r => {
+                // ---- ADDED LOG ----
+                console.log("[OTA] /ota_trigger response received");
+                return r.json();
+            })
             .then(resp => {
                 clearTimeout(timeout);
-                if (resp.status === 'no_update') {
-                    document.getElementById('otaStatus').innerText = `Current Version is ${resp.server_version}`;
-                } else if (resp.status === 'update_available') {
-                    if (confirm(`An Update is available, Version: ${resp.server_version}.\nProceed with update?`)) {
-                        document.getElementById('otaStatus').innerText = "Updating Firmware...";
-                        fetch('/ota_update', {method: 'POST'})
-                            .then r2 => r2.text())
-                            .then(msg2 => {
-                                document.getElementById('otaStatus').innerText = msg2;
-                            });
-                    } else {
-                        document.getElementById('otaStatus').innerText = `Update canceled. Current Version is ${resp.server_version}`;
-                    }
-                } else {
-                    document.getElementById('otaStatus').innerText = resp.status || "Unknown response";
-                }
+                // ---- ADDED LOG ----
+                if(resp.server_version)
+                    console.log("[OTA] Server JSON parsed, Firmware Version:", resp.server_version);
+                // (Removed logging of firmware_filename/fs_filename after manual check)
+
+                // Unified OTA status display and button toggle
+                const statusHtml = `Latest version: ${resp.server_version}<br><span style="color:#666;font-size:0.95em;">Last Updated: ${resp.last_check}</span>`;
+                document.getElementById('otaStatus').innerHTML = statusHtml;
+                document.getElementById('manualUpdateBtn').style.display = resp.update_available ? 'inline-block' : 'none';
+                // No else: always show the status card above
             })
-            .catch(() => {
+            .catch((err) => {
                 clearTimeout(timeout);
                 document.getElementById('otaStatus').innerText = "Server Timed Out";
+                console.error("[OTA] Error during /ota_trigger:", err);
             })
             .finally(() => {
                 icon.style.opacity = "";
                 icon.style.pointerEvents = "";
+                console.log("[OTA] OTA check flow finished.");
             });
     });
+
+    // Wire manual update button to open the modal directly and log the action
+    document.getElementById('manualUpdateBtn').addEventListener('click', function() {
+      console.log("[OTA] Manual update button clicked, showing update modal.");
+      document.getElementById('otaModal').style.display = 'block';
+    });
+    // Wire up the START UPDATE button in the OTA modal
+    document.getElementById('startUpdateBtn').addEventListener('click', function(e) {
+      console.log("[OTA] Start update button clicked, initiating OTA...");
+      e.preventDefault();
+      this.style.display = 'none';
+      document.getElementById('otaModal').style.display = 'block';
+      var progressEl = document.getElementById('otaProgress');
+      progressEl.value = 0;
+      document.getElementById('otaStatus').innerText = 'Updating Firmware...';
+      console.log("[OTA] Fetching /ota_update endpoint...");
+      console.log("[OTA] Sending POST to /ota_update");
+      fetch('/ota_update', { method: 'POST' })
+        .then(r => {
+          console.log("[OTA] /ota_update HTTP status:", r.status);
+          return r.text();
+        })
+        .then(msg => {
+          console.log("[OTA] /ota_update response text:", msg);
+          document.getElementById('otaStatus').innerText = msg;
+          progressEl.value = 100;
+          // document.getElementById('otaModal').style.display = 'none'; // Modal hiding removed per instruction
+        })
+        .catch(err => {
+          console.error("[OTA] Error during /ota_update:", err);
+          document.getElementById('otaStatus').innerText = "Update failed.";
+          // document.getElementById('otaModal').style.display = 'none'; // Modal hiding removed per instruction
+        });
+    });
+    // Wire reboot button
+    document.getElementById('rebootBtn').addEventListener('click', function() {
+      // Show rebooting message
+      document.getElementById('rebootMsg').style.display = 'block';
+      // Trigger reboot on server and then poll for server availability
+      fetch('/reboot', { method: 'POST' })
+        .catch(err => console.error('[Reboot] Error sending reboot request:', err));
+      // Poll root URL until the server is back online, then reload the page
+      const rebootPoll = setInterval(() => {
+        fetch('/')
+          .then(resp => {
+            if (resp.ok) {
+              clearInterval(rebootPoll);
+              window.location.reload();
+            }
+          })
+          .catch(() => {
+            // still rebooting, ignore errors
+          });
+      }, 1000);
+    });
 });
-
-function updateWsStatus(status) {
-    var wsElem = document.getElementById('ws-connection');
-    if (!wsElem) return;
-    wsElem.classList.remove('connected', 'disconnected');
-    if (status === 'connected') {
-        wsElem.classList.add('connected');
-        wsElem.textContent = 'Connected';
-    } else {
-        wsElem.classList.add('disconnected');
-        wsElem.textContent = 'Disconnected';
-    }
-}
-
-let ws;
-function connectWS() {
-    ws = new WebSocket('ws://' + location.hostname + '/ws');
-    ws.onopen = function() {
-        updateWsStatus('connected');
-    };
-    ws.onclose = function() {
-        updateWsStatus('disconnected');
-        setTimeout(connectWS, 5000);
-    };
-    ws.onerror = function(err) {
-        updateWsStatus('disconnected');
-    };
-    ws.onmessage = function(event) {
-        // Handle status JSON from server
-        try {
-            let data = JSON.parse(event.data);
-            if (data.ws_status) {
-                updateWsStatus(data.ws_status);
-            }
-            // Always update WebSocket Server field with lastDiscoveredIP:Port or Not discovered
-            let wsServerElem = document.getElementById('ws-server-field');
-            if (wsServerElem) {
-                if (data.lastDiscoveredIP && data.lastDiscoveredPort) {
-                    wsServerElem.textContent = data.lastDiscoveredIP + ':' + data.lastDiscoveredPort;
-                } else {
-                    wsServerElem.textContent = 'Not discovered';
-                }
-            }
-            // Update stat fields
-            if (data.serial1_frames !== undefined && data.serial1_valid !== undefined && data.serial1_invalid !== undefined && data.serial1_broadcast !== undefined) {
-                document.getElementById('serial1-stats-values').innerHTML =
-                    `&#x2705; ${data.serial1_valid} / &#x274C; ${data.serial1_invalid} &nbsp;|&nbsp; &#x1F4E2; ${data.serial1_broadcast}`;
-            }
-            if (data.serial2_frames !== undefined && data.serial2_valid !== undefined && data.serial2_invalid !== undefined && data.serial2_broadcast !== undefined) {
-                document.getElementById('serial2-stats-values').innerHTML =
-                    `&#x2705; ${data.serial2_valid} / &#x274C; ${data.serial2_invalid} &nbsp;|&nbsp; &#x1F4E2; ${data.serial2_broadcast}`;
-            }
-            if (data.ws_rx !== undefined && data.ws_tx !== undefined) {
-                document.getElementById('ws-stats-values').textContent = `RX ${data.ws_rx} / TX ${data.ws_tx}`;
-            }
-            if (data.ws_dup !== undefined) {
-                document.getElementById('ws-dup').textContent = data.ws_dup;
-            }
-        } catch (e) {
-            // Not a JSON status message, ignore
-        }
-    };
-}
-connectWS();
-setInterval(function() {
-    fetch(window.location.href, {cache: "no-store"}).then(res => {
-        if (res.status == 200 && document.hidden) location.reload();
-    }).catch(()=>{});
-}, 5000);
 </script>
 </body>
 </html>)";
@@ -1587,54 +1674,206 @@ void setup()
           req->send(400, "text/plain", "Missing param");
       } });
   httpServer.on("/ota_status", HTTP_GET, [](AsyncWebServerRequest *req)
-                {
-                  String json = "{";
-                  json += "\"status\":\"" + otaStatusMsg + "\",";
-                  json += "\"last_check\":\"" + lastFwCheckTime + "\"";
-                  json += "}";
-                  req->send(200, "application/json", json);
-                });
-  httpServer.on("/ota_trigger", HTTP_POST, [](AsyncWebServerRequest *req)
   {
-      if (!allowOta) {
-          req->send(403, "application/json", "{\"status\":\"forbidden\"}");
-          return;
-      }
-      String serverVersion, fwFile;
-      String status = checkOtaUpdateAvailable(serverVersion, fwFile);
       String json = "{";
-      json += "\"status\":\"" + status + "\",";
-      json += "\"server_version\":\"" + serverVersion + "\",";
-      json += "\"current_version\":\"" + String(VERSION) + "\"";
-      json += "}";
+      json += "\"status\":\"" + otaStatusMsg + "\",";
+      json += "\"last_check\":\"" + lastFwCheckTime + "\",";
+      json += "\"version\":\"" + latestFwVersion + "\",";
+      // Try to extract firmware_filename from lastOtaRawPayload
+      StaticJsonDocument<512> doc;
+      String fwFile = "";
+      if (!lastOtaRawPayload.isEmpty()) {
+          DeserializationError err = deserializeJson(doc, lastOtaRawPayload);
+          if (!err) {
+              if (doc.containsKey("firmware_filename"))
+                  fwFile = doc["firmware_filename"].as<String>();
+          }
+      }
+      json += "\"firmware_filename\":\"" + fwFile + "\",";
+      json += "\"last_http_code\":" + String(lastOtaHttpCode) + ",";
+      json += "\"last_raw\":\"";
+      for (size_t i = 0; i < lastOtaRawPayload.length(); ++i) {
+          char c = lastOtaRawPayload[i];
+          if (c == '\"' || c == '\\') json += '\\';
+          if (c >= 32 && c <= 126)
+              json += c;
+          else
+              json += '?';
+      }
+      json += "\"}";
       req->send(200, "application/json", json);
   });
-  httpServer.on("/ota_update", HTTP_POST, [](AsyncWebServerRequest *req)
+
+  httpServer.on("/ota_trigger", HTTP_POST, [](AsyncWebServerRequest *req)
   {
-      if (!allowOta) {
-          req->send(403, "application/json", "{\"status\":\"forbidden\"}");
-          return;
-      }
-      String serverVersion, fwFile;
-      String status = checkOtaUpdateAvailable(serverVersion, fwFile);
-      if (status != "update_available") {
-        req->send(200, "text/plain", "No update available");
-        return;
-      }
-      otaStatusMsg = "Updating Firmware...";
-      WiFiClient client;
-      t_httpUpdate_return fwRet = httpUpdate.update(client, OTA_FW_BASE_URL + fwFile);
-      if (fwRet == HTTP_UPDATE_OK) {
-        // Update success, device will reboot automatically
-        otaStatusMsg = "Update successful, rebooting...";
-        req->send(200, "text/plain", "Update successful, rebooting...");
-      } else {
-        otaStatusMsg = "Firmware update failed";
-        req->send(200, "text/plain", "Firmware update failed");
-      }
+      otaStatusMsg = "Checking for updates...";
+      checkAndAutoOta(); // updates latestFwVersion + lastFwCheckTime
+
+      bool updateAvailable = (!latestFwVersion.isEmpty() && String(VERSION) != latestFwVersion);
+
+      String json = "{";
+      json += "\"status\":\"" + otaStatusMsg + "\",";
+      json += "\"server_version\":\"" + latestFwVersion + "\",";
+      json += "\"last_check\":\"" + lastFwCheckTime + "\",";
+      json += "\"current_version\":\"" + String(VERSION) + "\",";
+      json += "\"update_available\":" + String(updateAvailable ? "true" : "false");
+      json += "}";
+
+      req->send(200, "application/json", json);
   });
   httpServer.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request)
                 { request->send(204); });
+  // OTA update endpoint (manual trigger, improved version)
+  httpServer.on("/ota_update", HTTP_POST, [](AsyncWebServerRequest *req) {
+      dashboardPaused = true;
+      wsServer.textAll("[DEBUG] OTA: /ota_update handler called");
+      Serial.println("[OTA] /ota_update handler called");
+      // Disconnect remote WebSocket client before OTA
+      webClient.disconnect();
+      Serial.println("[OTA] Disconnected remote WebSocket client for OTA");
+      if (latestFwFile.isEmpty()) {
+          wsServer.textAll("[OTA] No firmware file available");
+          Serial.println("[OTA] No firmware file available");
+          dashboardPaused = false;
+          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_reset();
+          req->send(400, "text/plain", "No firmware file available");
+          return;
+      }
+      String url = String(OTA_FW_BASE_URL) + latestFwFile;
+      wsServer.textAll(String("[OTA] Flashing: ") + latestFwFile); // For web UI below progress bar
+      // "[OTA] Flashing: ..." is kept for web UI only, but log to serial for debug
+      Serial.print("[OTA] Flashing: ");
+      Serial.println(latestFwFile);
+      wsServer.textAll("[DEBUG] OTA: Preparing to download firmware: " + url);
+      Serial.print("[DEBUG] OTA: Preparing to download firmware: ");
+      Serial.println(url);
+
+      req->send(200, "text/plain", "Update started, please wait...");
+
+      delay(100);
+
+      HTTPClient http;
+      WiFiClientSecure client;
+      client.setInsecure();
+      http.begin(client, url);
+
+      wsServer.textAll("[DEBUG] OTA: HTTP connection being established to: " + url);
+      Serial.print("[DEBUG] OTA: HTTP connection being established to: ");
+      Serial.println(url);
+
+      int httpCode = http.GET();
+      wsServer.textAll("[DEBUG] OTA: HTTP GET status code received: " + String(httpCode));
+      Serial.print("[DEBUG] OTA: HTTP GET status code received: ");
+      Serial.println(httpCode);
+      if (httpCode != HTTP_CODE_OK) {
+          wsServer.textAll("[OTA] HTTP GET failed, code: " + String(httpCode));
+          Serial.print("[OTA] HTTP GET failed, code: ");
+          Serial.println(httpCode);
+          http.end();
+          dashboardPaused = false;
+          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_reset();
+          return;
+      }
+      int contentLength = http.getSize();
+      if (contentLength <= 0) {
+          wsServer.textAll("[OTA] Invalid content length: " + String(contentLength));
+          Serial.print("[OTA] Invalid content length: ");
+          Serial.println(contentLength);
+          http.end();
+          dashboardPaused = false;
+          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_reset();
+          return;
+      }
+      wsServer.textAll("[DEBUG] OTA: Starting update, contentLength = " + String(contentLength));
+      Serial.print("[DEBUG] OTA: Starting update, contentLength = ");
+      Serial.println(contentLength);
+      esp_task_wdt_init(30, true); // Set WDT to 30 seconds for OTA
+      esp_task_wdt_reset();
+      if (!Update.begin(contentLength)) {
+          wsServer.textAll("[OTA] Update.begin failed: " + String(Update.errorString()));
+          Serial.print("[OTA] Update.begin failed: ");
+          Serial.println(Update.errorString());
+          http.end();
+          dashboardPaused = false;
+          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_reset();
+          return;
+      }
+      wsServer.textAll("[DEBUG] OTA: Update.begin succeeded");
+      Serial.println("[DEBUG] OTA: Update.begin succeeded");
+
+      WiFiClient *stream = http.getStreamPtr();
+      const size_t bufferSize = 1024;
+      uint8_t buffer[bufferSize];
+      int written = 0;
+      int lastReportedOffset = 0;
+      while (http.connected() && written < contentLength) {
+          esp_task_wdt_reset();
+          size_t available = stream->available();
+          if (available) {
+              size_t toRead = available > bufferSize ? bufferSize : available;
+              int bytesRead = stream->read(buffer, toRead);
+              if (bytesRead > 0) {
+                  size_t writeRes = Update.write(buffer, bytesRead);
+                  written += bytesRead;
+                  if ((written - lastReportedOffset) >= 1024 || written == contentLength) {
+                      wsServer.textAll("[DEBUG] OTA: Written chunk, offset now " + String(written) + " bytes");
+                      Serial.print("[DEBUG] OTA: Written chunk, offset now ");
+                      Serial.print(written);
+                      Serial.println(" bytes");
+                      lastReportedOffset = written;
+                  }
+                  uint8_t pct = (written * 100) / contentLength;
+                  wsServer.textAll(String("{\"ota_progress\":") + pct + "}");
+                  // Progress percentage JSON is for web UI; also log progress to serial
+                  Serial.print("[OTA] Progress: ");
+                  Serial.print(pct);
+                  Serial.println("%");
+              }
+          }
+          delay(1);
+      }
+      wsServer.textAll("[DEBUG] OTA: Finished download loop");
+      Serial.println("[DEBUG] OTA: Finished download loop");
+      wsServer.textAll("[DEBUG] OTA: Calling Update.end");
+      Serial.println("[DEBUG] OTA: Calling Update.end");
+      if (Update.end(true)) {
+          wsServer.textAll("[OTA] Update success, rebooting...");
+          Serial.println("[OTA] Update success, rebooting...");
+          http.end();
+          // Reconnect remote WebSocket client after OTA (if discovery info is available)
+          if (!lastDiscoveredIP.isEmpty() && !lastDiscoveredPort.isEmpty()) {
+            Serial.println("[OTA] Reconnecting remote WebSocket client after OTA");
+            webClient.begin(lastDiscoveredIP, lastDiscoveredPort.toInt(), "/");
+          }
+          dashboardPaused = false;
+          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_reset();
+          ESP.restart();
+      } else {
+          wsServer.textAll(String("[OTA] Update failed: ") + String(Update.errorString()));
+          Serial.print("[OTA] Update failed: ");
+          Serial.println(Update.errorString());
+          http.end();
+          // Reconnect remote WebSocket client after OTA (if discovery info is available)
+          if (!lastDiscoveredIP.isEmpty() && !lastDiscoveredPort.isEmpty()) {
+            Serial.println("[OTA] Reconnecting remote WebSocket client after OTA");
+            webClient.begin(lastDiscoveredIP, lastDiscoveredPort.toInt(), "/");
+          }
+          dashboardPaused = false;
+          esp_task_wdt_init(10, true); // Restore 10s watchdog after OTA
+          esp_task_wdt_reset();
+      }
+  });
+  // Reboot endpoint
+  httpServer.on("/reboot", HTTP_POST, [](AsyncWebServerRequest *req){
+    req->send(200, "text/plain", "Rebooting...");
+    delay(100);
+    ESP.restart();
+  });
   httpServer.addHandler(&wsServer);
   httpServer.begin();
   DBG_PRINTLN("HTTP server started on port 80");
@@ -1659,11 +1898,10 @@ void setup()
   allowOta = preferences.getBool("allow_ota", false);
   preferences.end();
   broadcastStatus();
-  // Only check for firmware update on boot if Allow Automatic Updates is enabled
   static bool hasCheckedFwUpdate = false;
   if (allowOta && !hasCheckedFwUpdate) {
-    checkAndAutoOta();
-    hasCheckedFwUpdate = true;
+      checkAndAutoOta();
+      hasCheckedFwUpdate = true;
   }
 
   // Register WebSocket client event handler before any use/begin
@@ -1671,14 +1909,14 @@ void setup()
 
   ArduinoOTA.onStart([&]()
                      {
-                       DBG_PRINTLN("OTA update starting...");
+                       wsServer.textAll("[OTA] OTA update starting...");
                        esp_task_wdt_delete(NULL); // Disable the watchdog for the current task during OTA
                        otaInProgress = true;
                        setRgb(64, 64, 64); // Ensure LED is white on start OTA
                      });
   ArduinoOTA.onEnd([&]()
                    {
-                     DBG_PRINTLN("\nOTA update complete");
+                     wsServer.textAll("[OTA] OTA update complete");
                      otaInProgress = false;
                      esp_task_wdt_init(10, true); // Re-enable watchdog after OTA
                      esp_task_wdt_add(NULL);      // Add current (loop) task to WDT
@@ -1693,15 +1931,24 @@ void setup()
       setRgb(ledState ? 64 : 0, ledState ? 64 : 0, ledState ? 64 : 0); // Blink white
       lastBlink = millis();
     }
-    DBG_PRINTF("OTA Progress: %u%%\r", (progress * 100) / total); });
+    wsServer.textAll(String("[OTA] OTA Progress: ") + String((progress * 100) / total) + "%");
+    uint8_t percent = (progress * 100) / total;
+    wsServer.textAll(String("{\"ota_progress\":") + percent + "}");
+  });
   ArduinoOTA.onError([](ota_error_t error)
                      {
-    DBG_PRINTF("OTA Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) DBG_PRINTLN("Authentication Failed");
-    else if (error == OTA_BEGIN_ERROR) DBG_PRINTLN("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) DBG_PRINTLN("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) DBG_PRINTLN("Receive Failed");
-    else if (error == OTA_END_ERROR) DBG_PRINTLN("End Failed"); });
+    // Map error code to human-readable message
+    String msg;
+    switch (error) {
+      case OTA_AUTH_ERROR:    msg = "[OTA] OTA Error: Authentication Failed"; break;
+      case OTA_BEGIN_ERROR:   msg = "[OTA] OTA Error: Begin Failed"; break;
+      case OTA_CONNECT_ERROR: msg = "[OTA] OTA Error: Connect Failed"; break;
+      case OTA_RECEIVE_ERROR: msg = "[OTA] OTA Error: Receive Failed"; break;
+      case OTA_END_ERROR:     msg = "[OTA] OTA Error: End Failed"; break;
+      default:                msg = "[OTA] OTA Error: " + String(error); break;
+    }
+    wsServer.textAll(msg);
+  });
   ArduinoOTA.begin();
   DBG_PRINTLN("OTA update service started");
 
@@ -1869,7 +2116,7 @@ void loop()
 
   // --- Periodic dashboard status broadcast to all /ws clients ---
   static unsigned long lastDashboardBroadcast = 0;
-  if (now - lastDashboardBroadcast > 2000)
+  if (!dashboardPaused && now - lastDashboardBroadcast > 2000)
   { // every 2 seconds
     broadcastStatus();
     lastDashboardBroadcast = now;
