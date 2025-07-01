@@ -1212,6 +1212,9 @@ String generateInfoPage()
                 <span class="info-label">WS: Duplicates Filtered</span>
                 <span class="info-value" id="ws-dup">0</span>
             </div>
+            <div class="info-row">
+                <button id="resetStatsBtn" style="margin-top:8px;">Reset Stats</button>
+            </div>
         </div>
         <div class="card">
           <h3>
@@ -1514,6 +1517,14 @@ document.addEventListener('DOMContentLoaded', function() {
           });
       }, 1000);
     });
+    // Reset Stats Button Handler
+    document.getElementById('resetStatsBtn').addEventListener('click', function() {
+        fetch('/reset_stats', {method: 'POST'})
+            .then(() => {
+                // Optionally force immediate status refresh
+                location.reload();
+            });
+    });
 });
 </script>
 </body>
@@ -1575,6 +1586,21 @@ String processTemplate(const String &var)
 // -------------------------------------------------------------------------
 void setup()
 {
+  httpServer.on("/reset_stats", HTTP_POST, [](AsyncWebServerRequest *req) {
+    stat_serial1_frames = 0;
+    stat_serial1_valid = 0;
+    stat_serial1_invalid = 0;
+    stat_serial1_broadcast = 0;
+    stat_serial2_frames = 0;
+    stat_serial2_valid = 0;
+    stat_serial2_invalid = 0;
+    stat_serial2_broadcast = 0;
+    stat_ws_rx = 0;
+    stat_ws_tx = 0;
+    stat_ws_dup = 0;
+    req->send(200, "text/plain", "OK");
+  });
+
   // Reset all stat counters to zero on boot
   stat_serial1_frames = 0;
   stat_serial1_valid = 0;
@@ -1818,8 +1844,8 @@ void setup()
                   written += bytesRead;
                   // OTA progress WebSocket messages (progress update)
                   uint8_t pct = (written * 100) / contentLength;
-                  wsServer.textAll(String("[OTA] OTA Progress: ") + String(pct) + "%");
-                  wsServer.textAll(String("{\"ota_progress\":") + String(pct) + "}");
+                  // wsServer.textAll(String("[OTA] OTA Progress: ") + String(pct) + "%");
+                  // wsServer.textAll(String("{\"ota_progress\":") + String(pct) + "}");
                   lastPctSent = pct;
                   Serial.print("[OTA] Progress: ");
                   Serial.print(pct);
