@@ -1,31 +1,5 @@
-#include <ArduinoJson.h>
-#include <HTTPClient.h>
-#include <HTTPUpdate.h>
-#include <Update.h>
-#include <stdint.h>
-#include <string>
-#include <string>
-#include <HTTPUpdate.h>
-bool allowOta = false;
-String latestFwVersion = "";
-String otaStatusMsg = "No updates found";
-String lastOtaRawPayload = "";
-int lastOtaHttpCode = 0;
-String latestFwFile = "";
-#define OTA_VERSION_URL "https://raw.githubusercontent.com/ristola/ShackMate/main/ShackMate-CIV/firmware/version.json"
-#define OTA_FW_BASE_URL "https://raw.githubusercontent.com/ristola/ShackMate/main/ShackMate-CIV/firmware/"
 #include <stdint.h>
 // -------------------------------------------------------------------------
-// Discovery packet timestamp (for clearing discovery info after timeout)
-static unsigned long lastDiscoveryPacket = 0;
-
-// Project Name and Version from PlatformIO, fallback defaults if not set
-#ifndef NAME
-#define NAME "ShackMate-CIV"
-#endif
-#ifndef VERSION
-#define VERSION "1.0.0"
-#endif
 
 // Communications statistics
 volatile uint32_t stat_serial1_frames = 0;
@@ -43,12 +17,23 @@ volatile uint32_t stat_ws_dup = 0;
 /* N4LDR ShackMate CI-V Controller, copyright (c) 2025 Half Baked Circuits */
 
 /*
+/*
 This project uses Serial1 and Serial2 for CI-V communication with the following pin assignments:
+
+{ATOM-LITE}
 UART#       Usual Pins    Typical Use    Can Remap?
             RX      TX
 Serial 0   GPIO1, GPIO3    USB/Debug     No (USB used)
 Serial 1   GPIO22, GPIO23  Unused/Free   Yes
 Serial 2   GPIO21, GPIO25  User / Free   Yes (I2C pins)
+
+{M5STACK-ATOMS3-LITE}
+UART#       Usual Pins    Typical Use    Can Remap?
+            RX      TX
+Serial 0   GPIO01, GPIO03  USB/Debug     No (USB used)
+Serial 1   GPIO05, GPIO07  Unused/Free   Yes
+Serial 2   GPIO39, GPIO38  User / Free   Yes (I2C pins)
+
 */
 
 /*
@@ -79,7 +64,6 @@ Serial 2   GPIO21, GPIO25  User / Free   Yes (I2C pins)
 // -------------------------------------------------------------------------
 #include <WiFi.h>
 #include <WiFiManager.h>
-#include <WiFiClientSecure.h>
 #include <AsyncTCP.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
@@ -101,8 +85,7 @@ Serial 2   GPIO21, GPIO25  User / Free   Yes (I2C pins)
 #include <ESPAsyncWebServer.h>
 #include "esp_task_wdt.h"
 #include <deque>
-struct MsgCacheEntry
-{
+struct MsgCacheEntry {
   String hex;
   unsigned long timestamp;
 };
@@ -110,122 +93,25 @@ std::deque<MsgCacheEntry> msgCache;
 const unsigned long CACHE_WINDOW_MS = 1000;
 const int CACHE_MAX_SIZE = 32;
 
-bool isDuplicateMessage(const String &hex)
-{
+bool isDuplicateMessage(const String& hex) {
   unsigned long now = millis();
   // Purge old entries
-  while (!msgCache.empty() && now - msgCache.front().timestamp > CACHE_WINDOW_MS)
-  {
+  while (!msgCache.empty() && now - msgCache.front().timestamp > CACHE_WINDOW_MS) {
     msgCache.pop_front();
   }
-  for (const auto &entry : msgCache)
-  {
-    if (entry.hex == hex)
-      return true;
+  for (const auto& entry : msgCache) {
+    if (entry.hex == hex) return true;
   }
   return false;
 }
 
-void addMessageToCache(const String &hex)
-{
-  if ((int)msgCache.size() >= CACHE_MAX_SIZE)
-    msgCache.pop_front();
+void addMessageToCache(const String& hex) {
+  if ((int)msgCache.size() >= CACHE_MAX_SIZE) msgCache.pop_front();
   msgCache.push_back({hex, millis()});
 }
 // HTTP/WebSocket server (browser dashboard) on port 80
 AsyncWebServer httpServer(80);
 AsyncWebSocket wsServer("/ws");
-
-String lastFwCheckTime = "Never";
-
-String getCurrentTimeString()
-{
-  time_t now = time(nullptr);
-  struct tm *tm_info = localtime(&now);
-  char buf[32];
-  if (tm_info)
-  {
-    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
-    return String(buf);
-  }
-  return "Unknown";
-}
-void checkAndAutoOta()
-{
-  lastFwCheckTime = getCurrentTimeString();
-  lastOtaRawPayload = "";
-  lastOtaHttpCode = 0;
-
-  WiFiClientSecure githubClient;
-  githubClient.setInsecure(); // For GitHub HTTPS access
-  HTTPClient http;
-  http.setTimeout(4000);
-  http.begin(githubClient, OTA_VERSION_URL);
-
-  int httpCode = http.GET();
-  lastOtaHttpCode = httpCode;
-  if (httpCode != 200)
-  {
-    otaStatusMsg = "[OTA] ERROR: Could not reach GitHub (HTTP " + String(httpCode) + ")";
-    otaStatusMsg += " [URL=" OTA_VERSION_URL "]";
-    latestFwVersion = "";
-    lastOtaRawPayload = "";
-    wsServer.textAll(String("[OTA] ") + otaStatusMsg);
-    wsServer.textAll(String("[DEBUG] OTA: ERROR: Could not reach GitHub (HTTP ") + String(httpCode) + ")");
-    http.end();
-    return;
-  }
-
-  String payload = http.getString();
-  lastOtaRawPayload = payload;
-  wsServer.textAll(String("[OTA] Received payload: ") + payload);
-  wsServer.textAll(String("[DEBUG] OTA: Received payload: ") + payload);
-  http.end();
-
-  StaticJsonDocument<2048> doc;
-  DeserializationError err = deserializeJson(doc, payload);
-  if (err)
-  {
-    otaStatusMsg = "[OTA] JSON parse error: ";
-    otaStatusMsg += err.c_str();
-    otaStatusMsg += " [RAW: " + payload + "]";
-    latestFwVersion = "";
-    wsServer.textAll(String("[OTA] ") + otaStatusMsg);
-    wsServer.textAll(String("[DEBUG] OTA: JSON parse error: ") + String(err.c_str()) + " [RAW: " + payload + "]");
-    return;
-  }
-
-  // Extract version and filenames from the JSON
-  latestFwVersion = doc["version"] | "";
-  String fwFile = doc["firmware_filename"] | "";
-  latestFwFile = fwFile;
-
-  otaStatusMsg = "Latest Firmware: " + latestFwVersion;
-
-  if (latestFwVersion.isEmpty() || fwFile.isEmpty())
-  {
-    otaStatusMsg = "[OTA] JSON parse error: version or firmware_filename missing! RAW: " + payload;
-    latestFwVersion = "";
-    wsServer.textAll(String("[OTA] ") + otaStatusMsg);
-    wsServer.textAll(String("[DEBUG] OTA: JSON parse error: version or firmware_filename missing! RAW: ") + payload);
-    return;
-  }
-
-  wsServer.textAll(String("[OTA] Parsed version: ") + latestFwVersion + ", firmware_filename: " + fwFile);
-  wsServer.textAll(String("[DEBUG] OTA: Parsed version: ") + latestFwVersion + ", firmware_filename: " + fwFile);
-
-  if (String(VERSION) == latestFwVersion)
-  {
-    otaStatusMsg = "Current Firmware: " + latestFwVersion;
-    wsServer.textAll(String("[OTA] ") + otaStatusMsg);
-    wsServer.textAll(String("[DEBUG] OTA: Already up to date: ") + latestFwVersion);
-    return;
-  }
-
-  otaStatusMsg = "Update available: " + latestFwVersion;
-  wsServer.textAll(String("[OTA] ") + otaStatusMsg);
-  wsServer.textAll(String("[DEBUG] OTA: Update available: ") + latestFwVersion);
-}
 // Helper to get number of connected /ws WebSocket clients
 size_t getWsClientCount()
 {
@@ -281,6 +167,8 @@ void setRgb(uint8_t r, uint8_t g, uint8_t b)
 // -------------------------------------------------------------------------
 // Project Constants stored in flash (PROGMEM)
 // -------------------------------------------------------------------------
+const char NAME_PROGMEM[] PROGMEM = "ShackMate - CI-V Controller";
+const char VERSION_PROGMEM[] PROGMEM = "2.1.1";
 const char AUTHOR_PROGMEM[] PROGMEM = "Half Baked Circuits";
 const char MDNS_NAME_PROGMEM[] PROGMEM = "shackmate-civ";
 
@@ -334,9 +222,6 @@ static bool serial2FrameActive = false;
 WebSocketsClient webClient;
 
 bool otaInProgress = false;
-
-// --- Dashboard pause flag for OTA updates ---
-static bool dashboardPaused = false;
 
 // Mutex for protecting shared serial message strings
 portMUX_TYPE serialMsgMutex = portMUX_INITIALIZER_UNLOCKED;
@@ -489,14 +374,9 @@ void broadcastStatus()
 {
   String status = "{";
   status += "\"ip\":\"" + deviceIP + "\",";
-  status += "\"ws_status\":\"" +
-            String(
-                (connectionState == CONNECTED && lastDiscoveredIP.length() && lastDiscoveredPort.length())
-                    ? "connected"
-                    : "disconnected") +
-            "\",";
+  status += "\"ws_status\":\"" + String((connectionState == CONNECTED) ? "connected" : "disconnected") + "\",";
   status += "\"ws_status_clients\":" + String(getWsClientCount()) + ",";
-  status += "\"version\":\"" + String(VERSION) + "\",";
+  status += "\"version\":\"" + String(FPSTR(VERSION_PROGMEM)) + "\",";
   status += "\"uptime\":\"" + getUptime() + "\",";
   status += "\"chip_id\":\"" + getChipID() + "\",";
   status += "\"cpu_freq\":\"" + String(getCpuFrequency()) + "\",";
@@ -517,8 +397,6 @@ void broadcastStatus()
   status += "\"ws_rx\":" + String(stat_ws_rx) + ",";
   status += "\"ws_tx\":" + String(stat_ws_tx) + ",";
   status += "\"ws_dup\":" + String(stat_ws_dup) + ",";
-  status += "\"lastDiscoveredIP\":\"" + lastDiscoveredIP + "\",";
-  status += "\"lastDiscoveredPort\":\"" + lastDiscoveredPort + "\",";
   status += "\"ws_status_updated\":" + String(millis());
   status += "}";
   wsServer.textAll(status);
@@ -538,17 +416,6 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
     setRgb(0, 0, 64); // BLUE on websocket connect
     connectionState = CONNECTED;
     broadcastStatus();
-    // Schedule a second broadcast after 100ms for instant UI update
-    static TimerHandle_t wsStatusTimer = NULL;
-    if (!wsStatusTimer)
-    {
-      wsStatusTimer = xTimerCreate("wsStatusTimer", pdMS_TO_TICKS(100), pdFALSE, 0, [](TimerHandle_t xTimer)
-                                   { broadcastStatus(); });
-    }
-    if (wsStatusTimer)
-    {
-      xTimerStart(wsStatusTimer, 0);
-    }
     return;
   }
   if (type == WStype_DISCONNECTED)
@@ -564,10 +431,6 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
       setRgb(255, 0, 0); // RED if WiFi lost
     }
     connectionState = DISCOVERING;
-    // Do NOT clear lastDiscoveredIP or lastDiscoveredPort here!
-    // lastDiscoveredIP = "";
-    // lastDiscoveredPort = "";
-    // lastDiscoveryPacket = 0;
     broadcastStatus();
     return;
   }
@@ -612,7 +475,7 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   Serial2.write(buffer, byteCount);
   Serial2.flush();
 
-  // Serial.printf("WebSocket -> Serial1 & Serial2: %s\n", msg.c_str());
+  Serial.printf("WebSocket -> Serial1 & Serial2: %s\n", msg.c_str());
 }
 
 // -------------------------------------------------------------------------
@@ -620,16 +483,12 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
 // -------------------------------------------------------------------------
 
 // Validate CI-V frame (must be at least FE FE XX XX XX FD)
-bool isValidCivFrame(const char *buf, size_t len)
-{
+bool isValidCivFrame(const char *buf, size_t len) {
   // Must be at least FE FE XX XX XX FD (min 5 bytes)
-  if (len < 5)
-    return false;
+  if (len < 5) return false;
   // Must start with FE FE and end with FD
-  if ((uint8_t)buf[0] != 0xFE || (uint8_t)buf[1] != 0xFE)
-    return false;
-  if ((uint8_t)buf[len - 1] != 0xFD)
-    return false;
+  if ((uint8_t)buf[0] != 0xFE || (uint8_t)buf[1] != 0xFE) return false;
+  if ((uint8_t)buf[len - 1] != 0xFD) return false;
   return true;
 }
 
@@ -679,12 +538,10 @@ void myTaskDebug(void *parameter)
           // On every frame, increment frames counter
           stat_serial1_frames++;
           // Validate CI-V frame before forwarding
-          if (isValidCivFrame(serial1Buf, serial1Len))
-          {
+          if (isValidCivFrame(serial1Buf, serial1Len)) {
             stat_serial1_valid++;
             String hex;
-            for (size_t i = 0; i < serial1Len; ++i)
-            {
+            for (size_t i = 0; i < serial1Len; ++i) {
               char b[4];
               sprintf(b, "%02X ", (uint8_t)serial1Buf[i]);
               hex += b;
@@ -692,29 +549,23 @@ void myTaskDebug(void *parameter)
             hex.trim();
 
             // Forward to WebSocket client (NO Serial debug print)
-            if (webClient.isConnected())
-            {
-              if (!isDuplicateMessage(hex))
-              {
+            if (webClient.isConnected()) {
+              if (!isDuplicateMessage(hex)) {
                 webClient.sendTXT(hex);
                 stat_ws_tx++;
+                broadcastStatus();
                 addMessageToCache(hex);
-              }
-              else
-              {
+              } else {
                 stat_ws_dup++;
+                broadcastStatus();
               }
             }
-          }
-          else
-          {
+          } else {
             stat_serial1_invalid++;
             // Log invalid frame to WebSocket as JSON
-            if (webClient.isConnected())
-            {
+            if (webClient.isConnected()) {
               String logMsg = "{\"event\":\"civ_frame_invalid\",\"src\":\"serial1\",\"hex\":\"";
-              for (size_t i = 0; i < serial1Len; ++i)
-              {
+              for (size_t i = 0; i < serial1Len; ++i) {
                 char b[4];
                 sprintf(b, "%02X ", (uint8_t)serial1Buf[i]);
                 logMsg += b;
@@ -723,17 +574,16 @@ void myTaskDebug(void *parameter)
               logMsg += "\"}";
               webClient.sendTXT(logMsg);
               stat_ws_tx++;
+              broadcastStatus();
             }
           }
 
           // --- BEGIN: Automatic reply to CI-V broadcast addressed to 00 ---
-          if (serial1Len >= 6)
-          { // At least FE FE 00 XX XX FD
+          if (serial1Len >= 6) { // At least FE FE 00 XX XX FD
             uint8_t toAddr = (uint8_t)serial1Buf[2];
             uint8_t fromAddr = (uint8_t)serial1Buf[3];
             // If the message is a broadcast (toAddr == 0x00) and not sent from us, respond as our device
-            if (toAddr == 0x00 && fromAddr != CIV_ADDRESS)
-            {
+            if (toAddr == 0x00 && fromAddr != CIV_ADDRESS) {
               stat_serial1_broadcast++;
               uint8_t cmd = (uint8_t)serial1Buf[4];
               uint8_t param = (serial1Len > 5) ? (uint8_t)serial1Buf[5] : 0x00;
@@ -743,21 +593,17 @@ void myTaskDebug(void *parameter)
               size_t replyLen = 5;
 
               // Echo subcommand if present
-              if ((cmd == 0x19) && (serial1Len > 5))
-              {
+              if ((cmd == 0x19) && (serial1Len > 5)) {
                 reply[replyLen++] = param;
 
                 // For command 19 01, append IP address as 4 bytes
-                if (param == 0x01)
-                {
+                if (param == 0x01) {
                   IPAddress ip = WiFi.localIP();
                   reply[replyLen++] = ip[0];
                   reply[replyLen++] = ip[1];
                   reply[replyLen++] = ip[2];
                   reply[replyLen++] = ip[3];
-                }
-                else if (param == 0x00)
-                {
+                } else if (param == 0x00) {
                   // For 19 00, append our CI-V address
                   reply[replyLen++] = CIV_ADDRESS;
                 }
@@ -769,15 +615,14 @@ void myTaskDebug(void *parameter)
               Serial1.flush();
 
               // --- WebSocket JSON log for broadcast reply ---
-              if (webClient.isConnected())
-              {
-                String logMsg = "{\"event\":\"civ_broadcast_reply\",\"from\":\"0x00\",\"to\":\"0x";
-                logMsg += String(CIV_ADDRESS, HEX);
-                logMsg += "\",\"cmd\":\"19 01\",\"ip\":\"";
-                logMsg += WiFi.localIP().toString();
-                logMsg += "\"}";
-                webClient.sendTXT(logMsg);
-                stat_ws_tx++;
+              if (webClient.isConnected()) {
+                  String logMsg = "{\"event\":\"civ_broadcast_reply\",\"from\":\"0x00\",\"to\":\"0x";
+                  logMsg += String(CIV_ADDRESS, HEX);
+                  logMsg += "\",\"cmd\":\"19 01\",\"ip\":\"";
+                  logMsg += WiFi.localIP().toString();
+                  logMsg += "\"}";
+                  webClient.sendTXT(logMsg);
+                  stat_ws_tx++;
               }
             }
           }
@@ -828,12 +673,10 @@ void myTaskDebug(void *parameter)
           // On every frame, increment frames counter
           stat_serial2_frames++;
           // Validate CI-V frame before forwarding
-          if (isValidCivFrame(serial2Buf, serial2Len))
-          {
+          if (isValidCivFrame(serial2Buf, serial2Len)) {
             stat_serial2_valid++;
             String hex;
-            for (size_t i = 0; i < serial2Len; ++i)
-            {
+            for (size_t i = 0; i < serial2Len; ++i) {
               char b[4];
               sprintf(b, "%02X ", (uint8_t)serial2Buf[i]);
               hex += b;
@@ -841,29 +684,23 @@ void myTaskDebug(void *parameter)
             hex.trim();
 
             // Forward to WebSocket client (NO Serial debug print)
-            if (webClient.isConnected())
-            {
-              if (!isDuplicateMessage(hex))
-              {
+            if (webClient.isConnected()) {
+              if (!isDuplicateMessage(hex)) {
                 webClient.sendTXT(hex);
                 stat_ws_tx++;
+                broadcastStatus();
                 addMessageToCache(hex);
-              }
-              else
-              {
+              } else {
                 stat_ws_dup++;
+                broadcastStatus();
               }
             }
-          }
-          else
-          {
+          } else {
             stat_serial2_invalid++;
             // Log invalid frame to WebSocket as JSON
-            if (webClient.isConnected())
-            {
+            if (webClient.isConnected()) {
               String logMsg = "{\"event\":\"civ_frame_invalid\",\"src\":\"serial2\",\"hex\":\"";
-              for (size_t i = 0; i < serial2Len; ++i)
-              {
+              for (size_t i = 0; i < serial2Len; ++i) {
                 char b[4];
                 sprintf(b, "%02X ", (uint8_t)serial2Buf[i]);
                 logMsg += b;
@@ -872,17 +709,16 @@ void myTaskDebug(void *parameter)
               logMsg += "\"}";
               webClient.sendTXT(logMsg);
               stat_ws_tx++;
+              broadcastStatus();
             }
           }
 
           // --- BEGIN: Automatic reply to CI-V broadcast addressed to 00 ---
-          if (serial2Len >= 6)
-          { // At least FE FE 00 XX XX FD
+          if (serial2Len >= 6) { // At least FE FE 00 XX XX FD
             uint8_t toAddr = (uint8_t)serial2Buf[2];
             uint8_t fromAddr = (uint8_t)serial2Buf[3];
             // If the message is a broadcast (toAddr == 0x00) and not sent from us, respond as our device
-            if (toAddr == 0x00 && fromAddr != CIV_ADDRESS)
-            {
+            if (toAddr == 0x00 && fromAddr != CIV_ADDRESS) {
               stat_serial2_broadcast++;
               uint8_t cmd = (uint8_t)serial2Buf[4];
               uint8_t param = (serial2Len > 5) ? (uint8_t)serial2Buf[5] : 0x00;
@@ -892,21 +728,17 @@ void myTaskDebug(void *parameter)
               size_t replyLen = 5;
 
               // Echo subcommand if present
-              if ((cmd == 0x19) && (serial2Len > 5))
-              {
+              if ((cmd == 0x19) && (serial2Len > 5)) {
                 reply[replyLen++] = param;
 
                 // For command 19 01, append IP address as 4 bytes
-                if (param == 0x01)
-                {
+                if (param == 0x01) {
                   IPAddress ip = WiFi.localIP();
                   reply[replyLen++] = ip[0];
                   reply[replyLen++] = ip[1];
                   reply[replyLen++] = ip[2];
                   reply[replyLen++] = ip[3];
-                }
-                else if (param == 0x00)
-                {
+                } else if (param == 0x00) {
                   // For 19 00, append our CI-V address
                   reply[replyLen++] = CIV_ADDRESS;
                 }
@@ -918,15 +750,14 @@ void myTaskDebug(void *parameter)
               Serial2.flush();
 
               // --- WebSocket JSON log for broadcast reply ---
-              if (webClient.isConnected())
-              {
-                String logMsg = "{\"event\":\"civ_broadcast_reply\",\"from\":\"0x00\",\"to\":\"0x";
-                logMsg += String(CIV_ADDRESS, HEX);
-                logMsg += "\",\"cmd\":\"19 01\",\"ip\":\"";
-                logMsg += WiFi.localIP().toString();
-                logMsg += "\"}";
-                webClient.sendTXT(logMsg);
-                stat_ws_tx++;
+              if (webClient.isConnected()) {
+                  String logMsg = "{\"event\":\"civ_broadcast_reply\",\"from\":\"0x00\",\"to\":\"0x";
+                  logMsg += String(CIV_ADDRESS, HEX);
+                  logMsg += "\",\"cmd\":\"19 01\",\"ip\":\"";
+                  logMsg += WiFi.localIP().toString();
+                  logMsg += "\"}";
+                  webClient.sendTXT(logMsg);
+                  stat_ws_tx++;
               }
             }
           }
@@ -963,30 +794,16 @@ void core0Task(void *parameter)
 }
 
 // -------------------------------------------------------------------------
-// Minimal core1UdpOtpTask implementation (empty loop, feeds watchdog)
-// -------------------------------------------------------------------------
-void core1UdpOtpTask(void *parameter)
-{
-  esp_task_wdt_add(NULL); // Add this task to watchdog
-  while (1)
-  {
-    esp_task_wdt_reset(); // Feed watchdog for this task
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-  }
-}
-
-// -------------------------------------------------------------------------
 // Generate Info Page Function
 // -------------------------------------------------------------------------
 String generateInfoPage()
 {
-  String wsServerField = (lastDiscoveredIP.length() > 0 ? lastDiscoveredIP + ":" + lastDiscoveredPort : "Not discovered");
   String html = R"(<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>)" + String(NAME) +
+    <title>)" + String(FPSTR(NAME_PROGMEM)) +
                 R"( - Status</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1052,7 +869,7 @@ String generateInfoPage()
         .footer-centered {
             text-align: center;
             color: #666;
-            font-size: 0.5em;
+            font-size: 1em;
             margin: 40px 0 10px 0;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
@@ -1082,15 +899,127 @@ String generateInfoPage()
             margin-bottom: 0;
         }
     </style>
-</style>
+    <script>
+        // Update the timestamp every second in h:mm:ss AM/PM format
+        function updateTimestamp() {
+            const now = new Date();
+            let hours = now.getHours();
+            const minutes = now.getMinutes().toString().padStart(2, '0');
+            const seconds = now.getSeconds().toString().padStart(2, '0');
+            const ampm = hours >= 12 ? 'PM' : 'AM';
+            hours = hours % 12;
+            hours = hours ? hours : 12;
+            const timeStr = hours + ':' + minutes + ':' + seconds + ' ' + ampm;
+            document.querySelectorAll('.timestamp').forEach(el => el.textContent = timeStr);
+        }
+
+        // Update WS status in DOM
+        function updateWsStatus(status, updatedMs) {
+            var wsElem = document.getElementById('ws-connection');
+            if (wsElem) {
+                wsElem.textContent = (status === 'connected') ? 'Connected' : 'Disconnected';
+                wsElem.className = 'status ' + (status === 'connected' ? 'connected' : 'disconnected');
+            }
+            var updElem = document.getElementById('ws-status-updated');
+            if (updElem) {
+                updElem.textContent = ""; // Optionally: "just now"
+            }
+        }
+
+        function updateStatusFromData(data) {
+            // Serial1 row
+            if (data.serial1_valid !== undefined && data.serial1_invalid !== undefined && data.serial1_broadcast !== undefined) {
+                var serial1StatsElem = document.getElementById('serial1-stats-values');
+                if (serial1StatsElem) {
+                    serial1StatsElem.innerHTML =
+                        '&#x2705; ' + data.serial1_valid +
+                        ' / &#x274C; ' + data.serial1_invalid +
+                        ' &nbsp;|&nbsp; &#x1F4E2; ' + data.serial1_broadcast;
+                }
+            }
+            // Serial2 row
+            if (data.serial2_valid !== undefined && data.serial2_invalid !== undefined && data.serial2_broadcast !== undefined) {
+                var serial2StatsElem = document.getElementById('serial2-stats-values');
+                if (serial2StatsElem) {
+                    serial2StatsElem.innerHTML =
+                        '&#x2705; ' + data.serial2_valid +
+                        ' / &#x274C; ' + data.serial2_invalid +
+                        ' &nbsp;|&nbsp; &#x1F4E2; ' + data.serial2_broadcast;
+                }
+            }
+            // WS row
+            if (data.ws_rx !== undefined && data.ws_tx !== undefined) {
+                var wsStatsElem = document.getElementById('ws-stats-values');
+                if (wsStatsElem) {
+                    wsStatsElem.textContent = 'RX ' + data.ws_rx + ' / TX ' + data.ws_tx;
+                }
+            }
+            if (data.ws_dup !== undefined) {
+                var wsDupElem = document.getElementById('ws-dup');
+                if (wsDupElem) wsDupElem.textContent = data.ws_dup;
+            }
+        }
+
+
+        document.addEventListener('DOMContentLoaded', function() {
+            updateTimestamp();
+            setInterval(updateTimestamp, 1000);
+
+            // --- WebSocket connection to ESP (no port, /ws path) ---
+            let ws;
+            let pingInterval = null; // NEW: Track our ping timer
+
+            function connectWS() {
+                ws = new WebSocket('ws://' + location.hostname + '/ws');
+                ws.onopen = function() {
+                    console.log('WebSocket connected');
+                    updateWsStatus('connected');
+                    // NEW: Start keep-alive ping
+                    if (pingInterval) clearInterval(pingInterval);
+                    pingInterval = setInterval(() => {
+                        if (ws.readyState === WebSocket.OPEN) ws.send('ping');
+                    }, 30000); // every 30 seconds
+                };
+                ws.onmessage = function(event) {
+                    // Expect JSON object with status values
+                    try {
+                        const data = JSON.parse(event.data);
+                        updateStatusFromData(data);
+                        if (data.ws_status) updateWsStatus(data.ws_status);
+                        if (data.uptime) document.getElementById('uptime').textContent = data.uptime;
+                    } catch (e) {
+                        // Not JSON or not a status update
+                    }
+                };
+                ws.onclose = function() {
+                    console.log('WebSocket closed, retrying in 5s...');
+                    updateWsStatus('disconnected');
+                    if (pingInterval) clearInterval(pingInterval); // NEW: Stop pinging
+                    setTimeout(connectWS, 5000);
+                };
+                ws.onerror = function(err) {
+                    console.error('WebSocket error:', err);
+                };
+            }
+            connectWS();
+
+            // --- Reset Stats button handler ---
+            document.getElementById('reset-stats-btn').addEventListener('click', function() {
+                fetch('/reset_stats', { method: 'POST' })
+                  .then(resp => resp.json())
+                  .then(data => console.log('Stats reset', data))
+                  .catch(err => console.error('Error resetting stats', err));
+            });
+        });
+    </script>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>)" +
-                String(NAME) + R"(</h1>
+                String(FPSTR(NAME_PROGMEM)) + R"(</h1>
             <div class="version">Version <span id="version">)" +
-                String(VERSION) + R"(</span></div>
+                String(FPSTR(VERSION_PROGMEM)) + R"(</span></div>
         </div>
         
         
@@ -1109,22 +1038,13 @@ String generateInfoPage()
                 </div>
                 <div class="info-row">
                     <span class="info-label">WebSocket Server:</span>
-                    <span class="info-value" id="ws-server-field">)" +
-                wsServerField + R"(</span>
+                    <span class="info-value">)" +
+                (lastDiscoveredIP.length() > 0 ? lastDiscoveredIP + ":" + lastDiscoveredPort : "Not discovered") + R"(</span>
                 </div>
                 <div class="info-row">
                     <span class="info-label">WS Connection:</span>
                     <span class="status )" +
-                String(
-                    (connectionState == CONNECTED && lastDiscoveredIP.length() && lastDiscoveredPort.length())
-                        ? "connected"
-                        : "disconnected") +
-                R"(" id="ws-connection">)" +
-                String(
-                    (connectionState == CONNECTED && lastDiscoveredIP.length() && lastDiscoveredPort.length())
-                        ? "Connected"
-                        : "Disconnected") +
-                R"(</span>
+                String((connectionState == CONNECTED) ? "connected" : "disconnected") + R"(" id="ws-connection">)" + String((connectionState == CONNECTED) ? "Connected" : "Disconnected") + R"(</span>
                 </div>
             </div>
             
@@ -1212,321 +1132,15 @@ String generateInfoPage()
                 <span class="info-label">WS: Duplicates Filtered</span>
                 <span class="info-value" id="ws-dup">0</span>
             </div>
-            <div class="info-row">
-                <button id="resetStatsBtn" style="margin-top:8px;">Reset Stats</button>
-            </div>
-        </div>
-        <div class="card">
-          <h3>
-            <span id="otaIcon" style="font-size:1.5em;vertical-align:middle;display:inline-block;line-height:1;cursor:pointer;" title="Click to check and update firmware">🔄</span>
-            Firmware Updates
-          </h3>
-          <div class="info-row">
-            <span class="info-label">Check for Updates:</span>
-            <span class="info-value">
-              <input type="checkbox" id="autoUpdateCb">
-            </span>
-          </div>
-          <div id="otaStatus" style="margin-top:10px;color:#006;">
-            Loading update status...
-          </div>
-          <div style="margin-top:10px;">
-            <button id="manualUpdateBtn" style="margin-right:10px; display: none;">Update Firmware</button>
-            <button id="rebootBtn">Reboot</button>
-          <div id="rebootMsg" style="display:none; position:fixed; top:20%; left:50%; transform:translateX(-50%); background:#ffffff; color:#333333; padding:20px; border:1px solid #555555; border-radius:8px; z-index:1000;">
-            Rebooting! Please wait...
-          </div>
-          <div id="otaModal" style="display:none; position:fixed; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1001;">
-            <div style="background:#fff; padding:20px; border-radius:8px; width:80%; max-width:400px; margin:100px auto; text-align:center;">
-              <div>You are about to re-flash this device.<br>Do not power cycle while updating.</div>
-              <progress id="otaProgress" max="100" value="0" style="width:100%; margin:20px 0;"></progress>
-              <button type="button" id="startUpdateBtn">START UPDATE</button>
-            </div>
-          </div>
-          </div>
+            <button id="reset-stats-btn" style="padding:6px 10px;font-size:0.95em;cursor:pointer;margin-top:8px;width:90%;">
+                Reset Stats
+            </button>
         </div>
         </div>
     <div class="footer-centered">
       Half Baked Circuits &bull; Last updated: <span class="timestamp"></span>
     </div>
     </div>
-</script>
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    // Real-time updates via WebSocket
-    const ws = new WebSocket(`ws://${window.location.host}/ws`);
-    ws.onmessage = event => {
-      const data = event.data;
-      if (typeof data !== "string") {
-        console.warn("Non-text WS message, ignoring:", data);
-        return;
-      }
-      const msg = data.trim();
-      // Handle plain-text OTA progress lines
-      if (msg.startsWith('[OTA] OTA Progress:')) {
-        console.log("WS OTA progress message:", msg);
-        const m = msg.match(/OTA Progress: (\\d+)%/);
-        if (m) {
-          document.getElementById('otaProgress').value = parseInt(m[1], 10);
-        }
-        return;
-      }
-      // Only attempt JSON.parse on JSON frames
-      if (!msg.startsWith('{')) {
-        console.log("WS Text Message:", msg);
-        return;
-      }
-      let st;
-      try {
-        st = JSON.parse(msg);
-      } catch (e) {
-        console.warn("Invalid JSON from WS:", e, msg);
-        return;
-      }
-      // Network fields, only if present
-      if (st.ip) {
-        document.getElementById('ip-address').textContent = st.ip;
-      }
-      if (st.ws_status) {
-        const wsElem = document.getElementById('ws-connection');
-        wsElem.textContent = st.ws_status.charAt(0).toUpperCase() + st.ws_status.slice(1);
-        wsElem.className = 'status ' + st.ws_status;
-      }
-      // System/version fields
-      if (st.version) {
-        document.getElementById('version').textContent = st.version;
-      }
-      if (st.uptime) {
-        document.getElementById('uptime').textContent = st.uptime;
-      }
-      if (st.chip_id) {
-        document.getElementById('chip-id').textContent = st.chip_id;
-      }
-      // OTA progress if present from JSON
-      if (st.ota_progress !== undefined) {
-        document.getElementById('otaProgress').value = st.ota_progress;
-      }
-      // ---- BEGIN: Live Update of Comm Stats ----
-      if (typeof st.serial1_frames !== "undefined" && typeof st.serial1_valid !== "undefined" && typeof st.serial1_invalid !== "undefined" && typeof st.serial1_broadcast !== "undefined") {
-        document.getElementById('serial1-stats-values').textContent =
-          `✅ ${st.serial1_valid} / ❌ ${st.serial1_invalid} | 📢 ${st.serial1_broadcast}`;
-      }
-      if (typeof st.serial2_frames !== "undefined" && typeof st.serial2_valid !== "undefined" && typeof st.serial2_invalid !== "undefined" && typeof st.serial2_broadcast !== "undefined") {
-        document.getElementById('serial2-stats-values').textContent =
-          `✅ ${st.serial2_valid} / ❌ ${st.serial2_invalid} | 📢 ${st.serial2_broadcast}`;
-      }
-      if (typeof st.ws_rx !== "undefined" && typeof st.ws_tx !== "undefined") {
-        document.getElementById('ws-stats-values').textContent = `RX ${st.ws_rx} / TX ${st.ws_tx}`;
-      }
-      if (typeof st.ws_dup !== "undefined") {
-        document.getElementById('ws-dup').textContent = st.ws_dup;
-      }
-      // ---- END: Live Update of Comm Stats ----
-    };
-
-    // Check/restore checkbox from backend
-    fetch('/get_auto_update').then(r => r.text()).then(val => {
-        document.getElementById('autoUpdateCb').checked = val.trim() == "1";
-        updateOtaStatusDisplay(); // Run once on page load with correct setting
-    });
-
-    document.getElementById('autoUpdateCb').addEventListener('change', function() {
-        fetch('/set_auto_update', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'enable=' + (this.checked ? 1 : 0)
-        });
-        updateOtaStatusDisplay(); // Update immediately when toggled
-    });
-
-    function loadOtaStatus() {
-        console.log("[OTA] Fetching /ota_status from server...");
-        fetch('/ota_status')
-            .then(r => {
-                console.log("[OTA] /ota_status response received");
-                return r.json();
-            })
-            .then(val => {
-                // --- BEGIN: Extra Debug Logging ---
-                console.log("[OTA] Raw /ota_status JSON:", val);
-                if (typeof val === "object" && val !== null) {
-                    if ("status" in val) console.log("[OTA] OTA Status:", val.status);
-                    if ("version" in val) console.log("[OTA] OTA Parsed Version:", val.version);
-                    if (val.firmware_filename) console.log("[OTA] OTA firmware_filename:", val.firmware_filename);
-                    if (val.fs_filename) console.log("[OTA] OTA fs_filename:", val.fs_filename);
-                    if ("last_check" in val) console.log("[OTA] OTA last_check:", val.last_check);
-                }
-                // --- END: Extra Debug Logging ---
-
-                let msg = val.status ? val.status.trim() : "";
-                let lastCheck = val.last_check ? val.last_check : "Unknown";
-                let version = val.version || null;
-                if (!version) {
-                    let verMatch = msg.match(/Latest Firmware: ([^\s]+)/i);
-                    if (verMatch && verMatch[1]) {
-                        version = verMatch[1];
-                    } else {
-                        let m = msg.match(/Ver: ([0-9.]+)/i);
-                        if (m && m[1]) version = m[1];
-                    }
-                }
-                // Force version to be a string if it's a number (for safety)
-                if (version !== null && typeof version !== "string") version = String(version);
-                // Log discovered version and raw status message to browser console
-                console.log("[OTA] Discovered Version from /ota_status:", version, "| Raw message:", msg);
-                let line = "";
-                if (version) {
-                    line = `Latest version: ${version}`;
-                } else {
-                    line = `Latest version: Unknown`;
-                }
-                line += `<br><span style="color:#666;font-size:0.95em;">Last Updated: ${lastCheck}</span>`;
-                document.getElementById('otaStatus').innerHTML = line;
-                // Show "Update Firmware" button only if version is available and different from current
-                var currentVer = document.getElementById('version').textContent;
-                if (version && version !== currentVer) {
-                    document.getElementById('manualUpdateBtn').style.display = 'inline-block';
-                } else {
-                    document.getElementById('manualUpdateBtn').style.display = 'none';
-                }
-            })
-            .catch(err => {
-                console.error("[OTA] Error fetching /ota_status:", err);
-                document.getElementById('otaStatus').innerHTML = "Error loading update status.";
-            });
-    }
-
-    function updateOtaStatusDisplay() {
-        // Always refresh status so manual button toggles based on the latest /ota_status
-        loadOtaStatus();
-    }
-
-    // Timestamp for footer
-    function updateTimestamp() {
-        let tsElem = document.querySelector('.timestamp');
-        if (tsElem) {
-            let d = new Date();
-            tsElem.textContent = d.toLocaleTimeString();
-        }
-    }
-    setInterval(updateTimestamp, 1000);
-    updateTimestamp();
-
-    // Add event handler for OTA icon
-    document.getElementById('otaIcon').addEventListener('click', function() {
-        // Manual firmware check/update is now always allowed, regardless of autoUpdateCb state.
-        var icon = this;
-        icon.style.opacity = "0.6";
-        icon.style.pointerEvents = "none";
-        document.getElementById('otaStatus').innerText = "Checking for Updates!";
-        // ---- ADDED LOG ----
-        console.log("[OTA] Contacting the Server via /ota_trigger...");
-        // Hide update button at start of manual check
-        document.getElementById('manualUpdateBtn').style.display = 'none';
-        let timeout = setTimeout(function() {
-            document.getElementById('otaStatus').innerText = "Server Timed Out";
-            icon.style.opacity = "";
-            icon.style.pointerEvents = "";
-        }, 8000); // 8 second timeout
-        fetch('/ota_trigger', {method: 'POST'})
-            .then(r => {
-                // ---- ADDED LOG ----
-                console.log("[OTA] /ota_trigger response received");
-                return r.json();
-            })
-            .then(resp => {
-                clearTimeout(timeout);
-                // ---- ADDED LOG ----
-                let server_version = resp.server_version;
-                // Ensure server_version is always a string
-                if (server_version !== null && typeof server_version !== "string")
-                    server_version = String(server_version);
-                if(server_version)
-                    console.log("[OTA] Server JSON parsed, Firmware Version:", server_version);
-                // (Removed logging of firmware_filename/fs_filename after manual check)
-
-                // Unified OTA status display and button toggle
-                const statusHtml = `Latest version: ${server_version}<br><span style="color:#666;font-size:0.95em;">Last Updated: ${resp.last_check}</span>`;
-                document.getElementById('otaStatus').innerHTML = statusHtml;
-                document.getElementById('manualUpdateBtn').style.display = resp.update_available ? 'inline-block' : 'none';
-                // No else: always show the status card above
-            })
-            .catch((err) => {
-                clearTimeout(timeout);
-                document.getElementById('otaStatus').innerText = "Server Timed Out";
-                console.error("[OTA] Error during /ota_trigger:", err);
-            })
-            .finally(() => {
-                icon.style.opacity = "";
-                icon.style.pointerEvents = "";
-                console.log("[OTA] OTA check flow finished.");
-            });
-    });
-
-    // Wire manual update button to open the modal directly and log the action
-    document.getElementById('manualUpdateBtn').addEventListener('click', function() {
-      console.log("[OTA] Manual update button clicked, showing update modal.");
-      document.getElementById('otaModal').style.display = 'block';
-    });
-    // Wire up the START UPDATE button in the OTA modal
-    document.getElementById('startUpdateBtn').addEventListener('click', function(e) {
-      console.log("[OTA] Start update button clicked, initiating OTA...");
-      e.preventDefault();
-      this.style.display = 'none';
-      document.getElementById('otaModal').style.display = 'block';
-      var progressEl = document.getElementById('otaProgress');
-      progressEl.value = 0;
-      document.getElementById('otaStatus').innerText = 'Updating Firmware...';
-      console.log("[OTA] Fetching /ota_update endpoint...");
-      console.log("[OTA] Sending POST to /ota_update");
-      fetch('/ota_update', { method: 'POST' })
-        .then(r => {
-          console.log("[OTA] /ota_update HTTP status:", r.status);
-          return r.text();
-        })
-        .then(msg => {
-          console.log("[OTA] /ota_update response text:", msg);
-          document.getElementById('otaStatus').innerText = msg;
-          progressEl.value = 100;
-          // document.getElementById('otaModal').style.display = 'none'; // Modal hiding removed per instruction
-        })
-        .catch(err => {
-          console.error("[OTA] Error during /ota_update:", err);
-          document.getElementById('otaStatus').innerText = "Update failed.";
-          // document.getElementById('otaModal').style.display = 'none'; // Modal hiding removed per instruction
-        });
-    });
-    // Wire reboot button
-    document.getElementById('rebootBtn').addEventListener('click', function() {
-      // Show rebooting message
-      document.getElementById('rebootMsg').style.display = 'block';
-      // Trigger reboot on server and then poll for server availability
-      fetch('/reboot', { method: 'POST' })
-        .catch(err => console.error('[Reboot] Error sending reboot request:', err));
-      // Poll root URL until the server is back online, then reload the page
-      const rebootPoll = setInterval(() => {
-        fetch('/')
-          .then(resp => {
-            if (resp.ok) {
-              clearInterval(rebootPoll);
-              window.location.reload();
-            }
-          })
-          .catch(() => {
-            // still rebooting, ignore errors
-          });
-      }, 1000);
-    });
-    // Reset Stats Button Handler
-    document.getElementById('resetStatsBtn').addEventListener('click', function() {
-        fetch('/reset_stats', {method: 'POST'})
-            .then(() => {
-                // Optionally force immediate status refresh
-                location.reload();
-            });
-    });
-});
-</script>
 </body>
 </html>)";
 
@@ -1539,7 +1153,7 @@ document.addEventListener('DOMContentLoaded', function() {
 String processTemplate(const String &var)
 {
   if (var == "PROJECT_NAME")
-    return String(NAME);
+    return String(FPSTR(NAME_PROGMEM));
   if (var == "TIME")
     return "--:--"; // Placeholder, or implement getCurrentTime()
   if (var == "IP")
@@ -1551,7 +1165,7 @@ String processTemplate(const String &var)
   if (var == "CIV_BAUD")
     return civBaud;
   if (var == "VERSION")
-    return String(VERSION);
+    return String(FPSTR(VERSION_PROGMEM));
   if (var == "UPTIME")
     return getUptime();
   if (var == "CHIP_ID")
@@ -1586,21 +1200,6 @@ String processTemplate(const String &var)
 // -------------------------------------------------------------------------
 void setup()
 {
-  httpServer.on("/reset_stats", HTTP_POST, [](AsyncWebServerRequest *req) {
-    stat_serial1_frames = 0;
-    stat_serial1_valid = 0;
-    stat_serial1_invalid = 0;
-    stat_serial1_broadcast = 0;
-    stat_serial2_frames = 0;
-    stat_serial2_valid = 0;
-    stat_serial2_invalid = 0;
-    stat_serial2_broadcast = 0;
-    stat_ws_rx = 0;
-    stat_ws_tx = 0;
-    stat_ws_dup = 0;
-    req->send(200, "text/plain", "OK");
-  });
-
   // Reset all stat counters to zero on boot
   stat_serial1_frames = 0;
   stat_serial1_valid = 0;
@@ -1631,8 +1230,7 @@ void setup()
   wifiManager.setAPCallback([&](WiFiManager *myWiFiManager)
                             {
     setRgb(64, 0, 64); // Purple (AP mode)
-    DBG_PRINT("Entered configuration mode (AP mode): ");
-    DBG_PRINTLN(NAME);
+    DBG_PRINTLN("Entered configuration mode (AP mode)");
     IPAddress apIP = WiFi.softAPIP();
     DBG_PRINT("AP IP: ");
     DBG_PRINTLN(apIP.toString());
@@ -1662,7 +1260,7 @@ void setup()
     }
   }
   // Attempt to connect automatically; if fails, start config portal and halt
-  if (!wifiManager.autoConnect(NAME) && !connected)
+  if (!wifiManager.autoConnect("ShackMate CI-V AP") && !connected)
   {
     DBG_PRINTLN("Failed to connect, starting AP portal");
     while (true)
@@ -1692,202 +1290,15 @@ void setup()
                 {
     String html = generateInfoPage();
     request->send(200, "text/html", html); });
-  httpServer.on("/get_auto_update", HTTP_GET, [](AsyncWebServerRequest *req)
-                { req->send(200, "text/plain", allowOta ? "1" : "0"); });
-  httpServer.on("/set_auto_update", HTTP_POST, [](AsyncWebServerRequest *req)
-                {
-      if (req->hasArg("enable")) {
-          allowOta = req->arg("enable") == "1";
-          preferences.begin("config", false);
-          preferences.putBool("allow_ota", allowOta);
-          preferences.end();
-          req->send(200, "text/plain", allowOta ? "1" : "0");
-      } else {
-          req->send(400, "text/plain", "Missing param");
-      } });
-  httpServer.on("/ota_status", HTTP_GET, [](AsyncWebServerRequest *req)
-  {
-      String json = "{";
-      json += "\"status\":\"" + otaStatusMsg + "\",";
-      json += "\"last_check\":\"" + lastFwCheckTime + "\",";
-      json += "\"version\":\"" + latestFwVersion + "\",";
-      // Try to extract firmware_filename from lastOtaRawPayload
-      StaticJsonDocument<512> doc;
-      String fwFile = "";
-      if (!lastOtaRawPayload.isEmpty()) {
-          DeserializationError err = deserializeJson(doc, lastOtaRawPayload);
-          if (!err) {
-              if (doc.containsKey("firmware_filename"))
-                  fwFile = doc["firmware_filename"].as<String>();
-          }
-      }
-      json += "\"firmware_filename\":\"" + fwFile + "\",";
-      json += "\"last_http_code\":" + String(lastOtaHttpCode) + ",";
-      json += "\"last_raw\":\"";
-      for (size_t i = 0; i < lastOtaRawPayload.length(); ++i) {
-          char c = lastOtaRawPayload[i];
-          if (c == '\"' || c == '\\') json += '\\';
-          if (c >= 32 && c <= 126)
-              json += c;
-          else
-              json += '?';
-      }
-      json += "\"}";
-      req->send(200, "application/json", json);
+  httpServer.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request) {
+      request->send(204); // No Content
   });
-
-  httpServer.on("/ota_trigger", HTTP_POST, [](AsyncWebServerRequest *req)
-  {
-      otaStatusMsg = "Checking for updates...";
-      checkAndAutoOta(); // updates latestFwVersion + lastFwCheckTime
-
-      bool updateAvailable = (!latestFwVersion.isEmpty() && String(VERSION) != latestFwVersion);
-
-      String json = "{";
-      json += "\"status\":\"" + otaStatusMsg + "\",";
-      json += "\"server_version\":\"" + latestFwVersion + "\",";
-      json += "\"last_check\":\"" + lastFwCheckTime + "\",";
-      json += "\"current_version\":\"" + String(VERSION) + "\",";
-      json += "\"update_available\":" + String(updateAvailable ? "true" : "false");
-      json += "}";
-
-      req->send(200, "application/json", json);
-  });
-  httpServer.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request)
-                { request->send(204); });
-  // OTA update endpoint (manual trigger, improved version)
-  httpServer.on("/ota_update", HTTP_POST, [](AsyncWebServerRequest *req) {
-      dashboardPaused = true;
-      wsServer.closeAll(); // Disconnect all WebSocket clients during OTA
-      Serial.println("[OTA] /ota_update handler called");
-      webClient.disconnect();
-      Serial.println("[OTA] Disconnected remote WebSocket client for OTA");
-      if (latestFwFile.isEmpty()) {
-          Serial.println("[OTA] No firmware file available");
-          dashboardPaused = false;
-          esp_task_wdt_init(10, true);
-          esp_task_wdt_reset();
-          req->send(400, "text/plain", "No firmware file available");
-          return;
-      }
-      String url = String(OTA_FW_BASE_URL) + latestFwFile;
-      // wsServer.textAll(String("[OTA] Flashing: ") + latestFwFile); // disabled for OTA
-      Serial.print("[OTA] Flashing: ");
-      Serial.println(latestFwFile);
-      Serial.print("[DEBUG] OTA: Preparing to download firmware: ");
-      Serial.println(url);
-
-      req->send(200, "text/plain", "Update started, please wait...");
-
-      delay(100);
-
-      HTTPClient http;
-      WiFiClientSecure client;
-      client.setInsecure();
-      http.begin(client, url);
-
-      Serial.print("[DEBUG] OTA: HTTP connection being established to: ");
-      Serial.println(url);
-
-      int httpCode = http.GET();
-      Serial.print("[DEBUG] OTA: HTTP GET status code received: ");
-      Serial.println(httpCode);
-      if (httpCode != HTTP_CODE_OK) {
-          Serial.print("[OTA] HTTP GET failed, code: ");
-          Serial.println(httpCode);
-          http.end();
-          dashboardPaused = false;
-          esp_task_wdt_init(10, true);
-          esp_task_wdt_reset();
-          return;
-      }
-      int contentLength = http.getSize();
-      if (contentLength <= 0) {
-          Serial.print("[OTA] Invalid content length: ");
-          Serial.println(contentLength);
-          http.end();
-          dashboardPaused = false;
-          esp_task_wdt_init(10, true);
-          esp_task_wdt_reset();
-          return;
-      }
-      Serial.print("[DEBUG] OTA: Starting update, contentLength = ");
-      Serial.println(contentLength);
-      esp_task_wdt_init(30, true);
-      esp_task_wdt_reset();
-      if (!Update.begin(contentLength)) {
-          Serial.print("[OTA] Update.begin failed: ");
-          Serial.println(Update.errorString());
-          http.end();
-          dashboardPaused = false;
-          esp_task_wdt_init(10, true);
-          esp_task_wdt_reset();
-          return;
-      }
-      Serial.println("[DEBUG] OTA: Update.begin succeeded");
-
-      WiFiClient *stream = http.getStreamPtr();
-      const size_t bufferSize = 1024;
-      uint8_t buffer[bufferSize];
-      int written = 0;
-      int lastReportedOffset = 0;
-      int lastPctSent = -1;
-      while (http.connected() && written < contentLength) {
-          esp_task_wdt_reset();
-          wsServer.cleanupClients();
-          size_t available = stream->available();
-          if (available) {
-              size_t toRead = available > bufferSize ? bufferSize : available;
-              int bytesRead = stream->read(buffer, toRead);
-              if (bytesRead > 0) {
-                  size_t writeRes = Update.write(buffer, bytesRead);
-                  written += bytesRead;
-                  // OTA progress WebSocket messages (progress update)
-                  uint8_t pct = (written * 100) / contentLength;
-                  // wsServer.textAll(String("[OTA] OTA Progress: ") + String(pct) + "%");
-                  // wsServer.textAll(String("{\"ota_progress\":") + String(pct) + "}");
-                  lastPctSent = pct;
-                  Serial.print("[OTA] Progress: ");
-                  Serial.print(pct);
-                  Serial.println("%");
-              }
-          }
-          yield();
-          delay(1);
-      }
-      Serial.println("[DEBUG] OTA: Finished download loop");
-      Serial.println("[DEBUG] OTA: Calling Update.end");
-      if (Update.end(true)) {
-          // wsServer.textAll("[OTA] Update success, rebooting..."); // disabled for OTA
-          Serial.println("[OTA] Update success, rebooting...");
-          http.end();
-          if (!lastDiscoveredIP.isEmpty() && !lastDiscoveredPort.isEmpty()) {
-            Serial.println("[OTA] Reconnecting remote WebSocket client after OTA");
-            webClient.begin(lastDiscoveredIP, lastDiscoveredPort.toInt(), "/");
-          }
-          dashboardPaused = false;
-          esp_task_wdt_init(10, true);
-          esp_task_wdt_reset();
-          ESP.restart();
-      } else {
-          // wsServer.textAll(String("[OTA] Update failed: ") + String(Update.errorString())); // disabled for OTA
-          Serial.print("[OTA] Update failed: ");
-          Serial.println(Update.errorString());
-          http.end();
-          if (!lastDiscoveredIP.isEmpty() && !lastDiscoveredPort.isEmpty()) {
-            Serial.println("[OTA] Reconnecting remote WebSocket client after OTA");
-            webClient.begin(lastDiscoveredIP, lastDiscoveredPort.toInt(), "/");
-          }
-          dashboardPaused = false;
-          esp_task_wdt_init(10, true);
-          esp_task_wdt_reset();
-      }
-  });
-  // Reboot endpoint
-  httpServer.on("/reboot", HTTP_POST, [](AsyncWebServerRequest *req){
-    req->send(200, "text/plain", "Rebooting...");
-    delay(100);
-    ESP.restart();
+  httpServer.on("/reset_stats", HTTP_POST, [](AsyncWebServerRequest *req) {
+      stat_serial1_frames = stat_serial1_valid = stat_serial1_invalid = stat_serial1_broadcast = 0;
+      stat_serial2_frames = stat_serial2_valid = stat_serial2_invalid = stat_serial2_broadcast = 0;
+      stat_ws_rx = stat_ws_tx = stat_ws_dup = 0;
+      req->send(200, "application/json", "{\"status\":\"ok\"}");
+      broadcastStatus();
   });
   httpServer.addHandler(&wsServer);
   httpServer.begin();
@@ -1909,29 +1320,22 @@ void setup()
   preferences.begin("config", false);
   civBaud = civBaudParam.getValue();
   preferences.putString("civ_baud", civBaud);
-  // Load Allow Automatic Updates
-  allowOta = preferences.getBool("allow_ota", false);
   preferences.end();
   broadcastStatus();
-  static bool hasCheckedFwUpdate = false;
-  if (allowOta && !hasCheckedFwUpdate) {
-      checkAndAutoOta();
-      hasCheckedFwUpdate = true;
-  }
 
   // Register WebSocket client event handler before any use/begin
   webClient.onEvent(webSocketClientEvent);
 
   ArduinoOTA.onStart([&]()
                      {
-                       wsServer.textAll("[OTA] OTA update starting...");
+                       DBG_PRINTLN("OTA update starting...");
                        esp_task_wdt_delete(NULL); // Disable the watchdog for the current task during OTA
                        otaInProgress = true;
                        setRgb(64, 64, 64); // Ensure LED is white on start OTA
                      });
   ArduinoOTA.onEnd([&]()
                    {
-                     wsServer.textAll("[OTA] OTA update complete");
+                     DBG_PRINTLN("\nOTA update complete");
                      otaInProgress = false;
                      esp_task_wdt_init(10, true); // Re-enable watchdog after OTA
                      esp_task_wdt_add(NULL);      // Add current (loop) task to WDT
@@ -1946,24 +1350,15 @@ void setup()
       setRgb(ledState ? 64 : 0, ledState ? 64 : 0, ledState ? 64 : 0); // Blink white
       lastBlink = millis();
     }
-    wsServer.textAll(String("[OTA] OTA Progress: ") + String((progress * 100) / total) + "%");
-    uint8_t percent = (progress * 100) / total;
-    wsServer.textAll(String("{\"ota_progress\":") + percent + "}");
-  });
+    DBG_PRINTF("OTA Progress: %u%%\r", (progress * 100) / total); });
   ArduinoOTA.onError([](ota_error_t error)
                      {
-    // Map error code to human-readable message
-    String msg;
-    switch (error) {
-      case OTA_AUTH_ERROR:    msg = "[OTA] OTA Error: Authentication Failed"; break;
-      case OTA_BEGIN_ERROR:   msg = "[OTA] OTA Error: Begin Failed"; break;
-      case OTA_CONNECT_ERROR: msg = "[OTA] OTA Error: Connect Failed"; break;
-      case OTA_RECEIVE_ERROR: msg = "[OTA] OTA Error: Receive Failed"; break;
-      case OTA_END_ERROR:     msg = "[OTA] OTA Error: End Failed"; break;
-      default:                msg = "[OTA] OTA Error: " + String(error); break;
-    }
-    wsServer.textAll(msg);
-  });
+    DBG_PRINTF("OTA Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) DBG_PRINTLN("Authentication Failed");
+    else if (error == OTA_BEGIN_ERROR) DBG_PRINTLN("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) DBG_PRINTLN("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) DBG_PRINTLN("Receive Failed");
+    else if (error == OTA_END_ERROR) DBG_PRINTLN("End Failed"); });
   ArduinoOTA.begin();
   DBG_PRINTLN("OTA update service started");
 
@@ -2031,7 +1426,7 @@ void loop()
     tcpStatus += "\"ip\":\"" + deviceIP + "\",";
     tcpStatus += "\"ws_status\":\"" + String((connectionState == CONNECTED) ? "connected" : "disconnected") + "\",";
     tcpStatus += "\"ws_status_clients\":" + String(getWsClientCount()) + ",";
-    tcpStatus += "\"version\":\"" + String(VERSION) + "\",";
+    tcpStatus += "\"version\":\"" + String(FPSTR(VERSION_PROGMEM)) + "\",";
     tcpStatus += "\"uptime\":\"" + getUptime() + "\",";
     tcpStatus += "\"chip_id\":\"" + getChipID() + "\",";
     tcpStatus += "\"cpu_freq\":\"" + String(getCpuFrequency()) + "\",";
@@ -2048,15 +1443,9 @@ void loop()
   }
   esp_task_wdt_reset(); // Feed after TCP client processing
 
-  // --- Optimized Discovery and Connection State Updates ---
-  // Track last broadcasted state to avoid redundant updates
-  static ConnState lastBroadcastedState = DISCOVERING;
-  static String lastBroadcastedIP = "";
-  static String lastBroadcastedPort = "";
-
   unsigned long now = millis();
 
-  // Discovery state
+  // Auto discovery and connection management
   if (connectionState == DISCOVERING)
   {
     if (now - lastDiscoveryAttempt > 2000)
@@ -2083,34 +1472,13 @@ void loop()
             Serial.println(port);
             lastDiscoveredIP = ip;
             lastDiscoveredPort = port;
-            lastDiscoveryPacket = now;
             connectionState = CONNECTING;
-            broadcastStatus();
           }
         }
       }
     }
   }
-  // Timeout: clear discovery info ONLY if not connected
-  if (lastDiscoveryPacket && (now - lastDiscoveryPacket > 6000))
-  {
-    if (connectionState != CONNECTED)
-    {
-      lastDiscoveredIP = "";
-      lastDiscoveredPort = "";
-      lastDiscoveryPacket = 0;
-      if (connectionState != lastBroadcastedState || lastDiscoveredIP != lastBroadcastedIP || lastDiscoveredPort != lastBroadcastedPort)
-      {
-        broadcastStatus();
-        lastBroadcastedState = connectionState;
-        lastBroadcastedIP = lastDiscoveredIP;
-        lastBroadcastedPort = lastDiscoveredPort;
-      }
-    }
-    // If connected, do not clear lastDiscoveredIP/Port
-  }
 
-  // Connecting state
   if (connectionState == CONNECTING && lastDiscoveredIP.length() && lastDiscoveredPort.length() && !wsConnectPending)
   {
     Serial.print("Attempting WebSocket connection to ");
@@ -2119,23 +1487,9 @@ void loop()
     Serial.println(lastDiscoveredPort);
     webClient.begin(lastDiscoveredIP, lastDiscoveredPort.toInt(), "/");
     wsConnectPending = true;
-    if (connectionState != lastBroadcastedState || lastDiscoveredIP != lastBroadcastedIP || lastDiscoveredPort != lastBroadcastedPort)
-    {
-      broadcastStatus();
-      lastBroadcastedState = connectionState;
-      lastBroadcastedIP = lastDiscoveredIP;
-      lastBroadcastedPort = lastDiscoveredPort;
-    }
+    // Wait for CONNECTED/DISCONNECTED event
   }
   esp_task_wdt_reset(); // Feed after discovery/connect
-
-  // --- Periodic dashboard status broadcast to all /ws clients ---
-  static unsigned long lastDashboardBroadcast = 0;
-  if (!dashboardPaused && now - lastDashboardBroadcast > 2000)
-  { // every 2 seconds
-    broadcastStatus();
-    lastDashboardBroadcast = now;
-  }
 
   // --- WiFi credential reset with 5 second button hold ---
   static unsigned long wifiResetPressStart = 0;
@@ -2168,5 +1522,19 @@ void loop()
     wifiResetActive = false;
   }
   esp_task_wdt_reset(); // Feed after button check
+
+  esp_task_wdt_reset(); // Feed after status push
+
   vTaskDelay(1 / portTICK_PERIOD_MS);
+}
+
+// -------------------------------------------------------------------------
+void core1UdpOtpTask(void *parameter)
+{
+  esp_task_wdt_add(NULL); // Add this task to watchdog
+  while (1)
+  {
+    esp_task_wdt_reset(); // Feed watchdog for this task
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
 }
