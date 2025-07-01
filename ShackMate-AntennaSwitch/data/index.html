@@ -270,9 +270,9 @@
           <span class="info-label">CPU Frequency:</span>
           <span class="info-value">%CPU_FREQ% MHz</span>
           <span class="info-label">Free Heap:</span>
-          <span class="info-value">%FREE_HEAP%</span>
+          <span class="info-value" id="freeHeapValue">%FREE_HEAP%</span>
           <span class="info-label">Uptime:</span>
-          <span class="info-value">%UPTIME%</span>
+          <span class="info-value" id="uptimeValue">%UPTIME%</span>
         </div>
       </div>
 
@@ -473,18 +473,23 @@
         const wsUrl = protocol + '//' + discoveredIP + ':' + discoveredPort + '/ws';
         ws = new WebSocket(wsUrl);
         ws.onopen = function() {
+          console.log('[WebSocket] Connected to ESP32 WebSocket server');
           // Do NOT update WS Connection badge here; only update on dashboardStatus from ESP
         };
         ws.onclose = function() {
+          console.log('[WebSocket] Disconnected from ESP32 WebSocket server, reconnecting in 3 seconds...');
           // Do NOT update WS Connection badge here; only update on dashboardStatus from ESP
           setTimeout(connectWebSocket, 3000);
         };
         ws.onerror = function(error) {
+          console.error('[WebSocket] Connection error:', error);
           // Do NOT update WS Connection badge here; only update on dashboardStatus from ESP
         };
         ws.onmessage = function(event) {
           try {
             const data = JSON.parse(event.data);
+            console.log('[WebSocket] Received message:', data);
+            
             if (data.type === 'dashboardStatus') {
               // Only update from the ESP's message
               document.getElementById('ws-server').textContent = data.wsServer || 'Unknown';
@@ -493,30 +498,30 @@
                 document.getElementById('civAddressDisplay').textContent = data.civAddress;
               }
             } else if (data.type === 'uptimeUpdate') {
-              // Update uptime and free heap in real-time
-              const uptimeElements = document.querySelectorAll('.info-value');
-              uptimeElements.forEach(element => {
-                const parent = element.parentElement;
-                const label = parent.querySelector('.info-label');
-                if (label && label.textContent.includes('Uptime')) {
-                  element.textContent = data.uptime;
-                }
-              });
+              console.log('[WebSocket] Processing uptime update:', data.uptime);
               
-              // Update free heap if present
+              // Update uptime using direct ID
+              const uptimeElement = document.getElementById('uptimeValue');
+              if (uptimeElement) {
+                console.log('[WebSocket] Updating uptime element from:', uptimeElement.textContent, 'to:', data.uptime);
+                uptimeElement.textContent = data.uptime;
+              } else {
+                console.error('[WebSocket] Could not find uptime element with ID "uptimeValue"');
+              }
+              
+              // Update free heap using direct ID
               if (data.freeHeap) {
-                const heapElements = document.querySelectorAll('.info-value');
-                heapElements.forEach(element => {
-                  const parent = element.parentElement;
-                  const label = parent.querySelector('.info-label');
-                  if (label && label.textContent.includes('Free Heap')) {
-                    element.textContent = data.freeHeap;
-                  }
-                });
+                const heapElement = document.getElementById('freeHeapValue');
+                if (heapElement) {
+                  console.log('[WebSocket] Updating free heap element from:', heapElement.textContent, 'to:', data.freeHeap);
+                  heapElement.textContent = data.freeHeap;
+                } else {
+                  console.error('[WebSocket] Could not find free heap element with ID "freeHeapValue"');
+                }
               }
             }
           } catch (e) {
-            // Ignore parse errors
+            console.error('[WebSocket] Error parsing message:', e, 'Raw data:', event.data);
           }
         };
       }

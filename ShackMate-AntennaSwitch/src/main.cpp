@@ -141,9 +141,14 @@ void broadcastUptime()
   {
     snprintf(uptimeBuf, sizeof(uptimeBuf), "%lu Hours %lu Minutes", hours, mins);
   }
-  else
+  else if (mins > 0)
   {
     snprintf(uptimeBuf, sizeof(uptimeBuf), "%lu Minutes", mins);
+  }
+  else
+  {
+    unsigned long seconds = secs % 60;
+    snprintf(uptimeBuf, sizeof(uptimeBuf), "%lu Seconds", seconds);
   }
   doc["uptime"] = String(uptimeBuf);
 
@@ -152,7 +157,23 @@ void broadcastUptime()
 
   String msg;
   serializeJson(doc, msg);
+
+  // Count connected WebSocket clients
+  int clientCount = 0;
+  for (auto *client : ws.getClients())
+  {
+    if (client && client->status() == WS_CONNECTED)
+    {
+      clientCount++;
+    }
+  }
+
   ws.textAll(msg);
+  Serial.printf("[WS] Broadcasted uptime update to %d clients: %s\n", clientCount, uptimeBuf);
+  if (clientCount == 0)
+  {
+    Serial.println("[WS] WARNING: No connected WebSocket clients to receive uptime update!");
+  }
 }
 
 // --- Default CI-V Baud Rate ---
@@ -409,9 +430,14 @@ String processTemplate(String t)
   {
     snprintf(buf, sizeof(buf), "%lu Hours %lu Minutes", hours, mins);
   }
-  else
+  else if (mins > 0)
   {
     snprintf(buf, sizeof(buf), "%lu Minutes", mins);
+  }
+  else
+  {
+    unsigned long seconds = secs % 60;
+    snprintf(buf, sizeof(buf), "%lu Seconds", seconds);
   }
   t.replace("%UPTIME%", buf);
 
@@ -478,7 +504,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
   {
   case WS_EVT_CONNECT:
   {
-    Serial.printf("[WS] Client connected, sending current state\n");
+    Serial.printf("[WS] Client #%u connected from %s, sending current state\n", client->id(), client->remoteIP().toString().c_str());
 
     // Always create a fresh state document with current values
     DynamicJsonDocument doc(2048);
@@ -522,6 +548,11 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
                   currentAntennaIndex, doc["rcsType"].as<int>());
     // --- Send dashboardStatus to new client ---
     broadcastDashboardStatus();
+    break;
+  }
+  case WS_EVT_DISCONNECT:
+  {
+    Serial.printf("[WS] Client #%u disconnected\n", client->id());
     break;
   }
   case WS_EVT_DATA:
@@ -1262,9 +1293,9 @@ void loop()
   static unsigned long lastWsPing = 0;
   static unsigned long lastWsReconnect = 0;
   static unsigned long lastUptimeBroadcast = 0;
-  const unsigned long wsPingInterval = 10000;          // 10s ping
-  const unsigned long wsReconnectInterval = 5000;      // 5s reconnect
-  const unsigned long uptimeBroadcastInterval = 60000; // 60s uptime update (1 minute)
+  const unsigned long wsPingInterval = 10000;         // 10s ping
+  const unsigned long wsReconnectInterval = 5000;     // 5s reconnect
+  const unsigned long uptimeBroadcastInterval = 2000; // 2s uptime update
 
   // --- Broadcast uptime updates every 2 seconds ---
   if (now - lastUptimeBroadcast > uptimeBroadcastInterval)
