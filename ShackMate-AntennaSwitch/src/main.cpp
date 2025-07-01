@@ -122,6 +122,39 @@ void broadcastDashboardStatus()
   Serial.printf("[WS] Broadcasted dashboardStatus: %s\n", msg.c_str());
 }
 
+// --- Uptime Broadcast Helper ---
+void broadcastUptime()
+{
+  DynamicJsonDocument doc(128);
+  doc["type"] = "uptimeUpdate";
+  unsigned long secs = millis() / 1000;
+  unsigned long days = secs / 86400;
+  unsigned long hours = (secs % 86400) / 3600;
+  unsigned long mins = (secs % 3600) / 60;
+
+  char uptimeBuf[64];
+  if (days > 0)
+  {
+    snprintf(uptimeBuf, sizeof(uptimeBuf), "%lu Days %lu Hours %lu Minutes", days, hours, mins);
+  }
+  else if (hours > 0)
+  {
+    snprintf(uptimeBuf, sizeof(uptimeBuf), "%lu Hours %lu Minutes", hours, mins);
+  }
+  else
+  {
+    snprintf(uptimeBuf, sizeof(uptimeBuf), "%lu Minutes", mins);
+  }
+  doc["uptime"] = String(uptimeBuf);
+
+  // Also include free heap for live memory monitoring
+  doc["freeHeap"] = String(ESP.getFreeHeap());
+
+  String msg;
+  serializeJson(doc, msg);
+  ws.textAll(msg);
+}
+
 // --- Default CI-V Baud Rate ---
 #define CIV_BAUD_DEFAULT 19200
 int civBaud = CIV_BAUD_DEFAULT;
@@ -368,8 +401,18 @@ String processTemplate(String t)
   unsigned long days = secs / 86400;
   unsigned long hours = (secs % 86400) / 3600;
   unsigned long mins = (secs % 3600) / 60;
-  unsigned long secs2 = secs % 60;
-  snprintf(buf, sizeof(buf), "%lu days %02lu:%02lu:%02lu", days, hours, mins, secs2);
+  if (days > 0)
+  {
+    snprintf(buf, sizeof(buf), "%lu Days %lu Hours %lu Minutes", days, hours, mins);
+  }
+  else if (hours > 0)
+  {
+    snprintf(buf, sizeof(buf), "%lu Hours %lu Minutes", hours, mins);
+  }
+  else
+  {
+    snprintf(buf, sizeof(buf), "%lu Minutes", mins);
+  }
   t.replace("%UPTIME%", buf);
 
   uint64_t chipid = ESP.getEfuseMac();
@@ -1218,8 +1261,17 @@ void loop()
   // --- WebSocket Client Keepalive/Ping and Reconnect Logic ---
   static unsigned long lastWsPing = 0;
   static unsigned long lastWsReconnect = 0;
-  const unsigned long wsPingInterval = 10000;     // 10s ping
-  const unsigned long wsReconnectInterval = 5000; // 5s reconnect
+  static unsigned long lastUptimeBroadcast = 0;
+  const unsigned long wsPingInterval = 10000;          // 10s ping
+  const unsigned long wsReconnectInterval = 5000;      // 5s reconnect
+  const unsigned long uptimeBroadcastInterval = 60000; // 60s uptime update (1 minute)
+
+  // --- Broadcast uptime updates every 2 seconds ---
+  if (now - lastUptimeBroadcast > uptimeBroadcastInterval)
+  {
+    lastUptimeBroadcast = now;
+    broadcastUptime();
+  }
 
   // Track last used IP/port for wsClient
   static String wsClientLastIp = "";

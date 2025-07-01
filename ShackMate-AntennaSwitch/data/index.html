@@ -235,30 +235,8 @@
       font-size: 0.9em;
     }
   </style>
-  <script>
-    // --- Auto-refresh timer ---
-    let refreshSeconds = 30;
-    function updateRefreshBadge() {
-      const badge = document.getElementById('autoRefreshBadge');
-      if (badge) badge.textContent = `Auto-refresh: ${refreshSeconds}s`;
-    }
-    function startAutoRefresh() {
-      updateRefreshBadge();
-      setInterval(() => {
-        refreshSeconds--;
-        updateRefreshBadge();
-        if (refreshSeconds <= 0) {
-          location.reload();
-        }
-      }, 1000);
-    }
-    document.addEventListener('DOMContentLoaded', startAutoRefresh);
-  </script>
 </head>
 <body>
-  <div style="position: absolute; top: 24px; right: 32px; z-index: 10;">
-    <span id="autoRefreshBadge" style="background: #232136; color: #fff; padding: 10px 18px; border-radius: 24px; font-size: 1.2em; font-weight: bold; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">Auto-refresh: 30s</span>
-  </div>
   <div class="container">
     <div class="header">%PROJECT_NAME%</div>
     <div class="version">Version %VERSION%</div>
@@ -392,7 +370,7 @@
     </div>
 
     <div class="footer">
-      <p>Half Baked Circuits • Last updated: %TIME%</p>
+      <p>Half Baked Circuits • Live updates via WebSocket</p>
       <p>UDP Discovery: Listening for 'ShackMate,&lt;ip&gt;,&lt;port&gt;' broadcasts</p>
     </div>
 
@@ -513,6 +491,28 @@
               updateWsStatus(data.wsStatus || 'Unknown');
               if (data.civAddress) {
                 document.getElementById('civAddressDisplay').textContent = data.civAddress;
+              }
+            } else if (data.type === 'uptimeUpdate') {
+              // Update uptime and free heap in real-time
+              const uptimeElements = document.querySelectorAll('.info-value');
+              uptimeElements.forEach(element => {
+                const parent = element.parentElement;
+                const label = parent.querySelector('.info-label');
+                if (label && label.textContent.includes('Uptime')) {
+                  element.textContent = data.uptime;
+                }
+              });
+              
+              // Update free heap if present
+              if (data.freeHeap) {
+                const heapElements = document.querySelectorAll('.info-value');
+                heapElements.forEach(element => {
+                  const parent = element.parentElement;
+                  const label = parent.querySelector('.info-label');
+                  if (label && label.textContent.includes('Free Heap')) {
+                    element.textContent = data.freeHeap;
+                  }
+                });
               }
             }
           } catch (e) {

@@ -1,0 +1,30 @@
+/* Full window, black background */
+/*
+body {
+  background-color: #000;
+  color: #fff;
+  font-family: sans-serif;
+  margin: 0;
+  padding: 20px;
+}
+*/
+/*
+svg {
+  background-color: #000;
+  display: block;
+  margin: 0 auto;
+  width: 600px;
+  height: 280px;
+}
+*/
+.scale-text {
+  fill: white;
+  font-size: 10px;
+  font-family: sans-serif;
+}
+.bar-name {
+  fill: white;
+  font-size: 10px;
+  font-family: sans-serif;
+  text-anchor: end;
+}
