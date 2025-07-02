@@ -1,5 +1,74 @@
 #include <stdint.h>
 // -------------------------------------------------------------------------
+// CI-V Controller Specific Configuration
+// -------------------------------------------------------------------------
+#include "../include/civ_config.h"
+
+// -------------------------------------------------------------------------
+// ShackMateCore Library Includes
+// -------------------------------------------------------------------------
+#include "../lib/ShackMateCore/logger.h"
+#include "../lib/ShackMateCore/device_state.h"
+#include "../lib/ShackMateCore/network_manager.h"
+#include "../lib/ShackMateCore/json_builder.h"
+
+// -------------------------------------------------------------------------
+// Additional JSON Library for Direct JSON Handling
+// -------------------------------------------------------------------------
+#include <ArduinoJson.h>
+
+// -------------------------------------------------------------------------
+// Function Declarations
+// -------------------------------------------------------------------------
+bool isValidHexMessage(const String &msg);
+void validateConfiguration();
+
+// -------------------------------------------------------------------------
+// Helper Function Implementations
+// -------------------------------------------------------------------------
+bool isValidHexMessage(const String &msg)
+{
+  if (msg.length() < 4)
+    return false;
+
+  for (size_t i = 0; i < msg.length(); i++)
+  {
+    char c = msg.charAt(i);
+    if (!((c >= '0' && c <= '9') ||
+          (c >= 'A' && c <= 'F') ||
+          (c >= 'a' && c <= 'f') ||
+          c == ' '))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+void validateConfiguration()
+{
+  Logger::info("Validating configuration...");
+
+  // Check CI-V address is in valid range
+  if (CIV_ADDRESS < 0x01 || CIV_ADDRESS > 0xDF)
+  {
+    Logger::error("Invalid CI-V address: 0x" + String(CIV_ADDRESS, HEX));
+  }
+
+  // Check serial pins are not conflicting
+  if (MY_RX1 == MY_RX2 || MY_TX1 == MY_TX2 || MY_RX1 == MY_TX2 || MY_TX1 == MY_RX2)
+  {
+    Logger::error("Serial pin conflict detected!");
+  }
+
+  // Check UDP port is in valid range
+  if (UDP_PORT < 1024 || UDP_PORT > 65535)
+  {
+    Logger::warning("UDP port " + String(UDP_PORT) + " may require elevated privileges");
+  }
+
+  Logger::info("Configuration validation complete");
+}
 
 // Communications statistics
 volatile uint32_t stat_serial1_frames = 0;
@@ -47,23 +116,16 @@ Serial 2   GPIO39, GPIO38  User / Free   Yes (I2C pins)
 */
 
 // -------------------------------------------------------------------------
-// Debug Macros (must be defined before use)
+// Logging System - Using ShackMateCore Logger
 // -------------------------------------------------------------------------
-#define DEBUG_SERIAL // Comment this line out to disable debug prints
-#ifdef DEBUG_SERIAL
-#define DBG_PRINT(...) Serial.print(__VA_ARGS__)
-#define DBG_PRINTLN(...) Serial.println(__VA_ARGS__)
-#define DBG_PRINTF(...) Serial.printf(__VA_ARGS__)
-#else
-#define DBG_PRINT(...) ((void)0)
-#define DBG_PRINTLN(...) ((void)0)
-#define DBG_PRINTF(...) ((void)0)
-#endif
+// Replace debug macros with ShackMateCore Logger calls
+#define DBG_PRINT(msg) Logger::debug(String(msg))
+#define DBG_PRINTLN(msg) Logger::info(String(msg))
+#define DBG_PRINTF(fmt, ...) Logger::info(String("DBG: ") + String(fmt))
 // -------------------------------------------------------------------------
-// Includes
+// Standard Arduino and ESP32 Libraries
 // -------------------------------------------------------------------------
 #include <WiFi.h>
-#include <WiFiManager.h>
 #include <AsyncTCP.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
@@ -85,14 +147,17 @@ Serial 2   GPIO39, GPIO38  User / Free   Yes (I2C pins)
 #include <ESPAsyncWebServer.h>
 #include "esp_task_wdt.h"
 #include <deque>
+#include "LittleFS.h"
+
+// WiFiManager includes last to avoid HTTP method conflicts
+// #include <WiFiManager.h>  // Temporarily disabled due to HTTP method conflicts
+
 struct MsgCacheEntry
 {
   String hex;
   unsigned long timestamp;
 };
 std::deque<MsgCacheEntry> msgCache;
-const unsigned long CACHE_WINDOW_MS = 1000;
-const int CACHE_MAX_SIZE = 32;
 
 bool isDuplicateMessage(const String &hex)
 {
@@ -129,28 +194,10 @@ WiFiServer tcpServer(4000);
 // -------------------------------------------------------------------------
 // Forward declaration for setRgb (must be after includes, before any use)
 // -------------------------------------------------------------------------
-// Forward declaration for setRgb (must be after includes, before any use)
 void setRgb(uint8_t r, uint8_t g, uint8_t b);
 
 // -------------------------------------------------------------------------
-// User-definable Serial port pin assignments and CI-V settings
-#if defined(M5ATOM_S3) || defined(ARDUINO_M5Stack_ATOMS3)
-// AtomS3 valid UART pins (adjust as needed for your wiring)
-#define MY_RX1 5
-#define MY_TX1 7
-#define MY_RX2 39
-#define MY_TX2 38
-#define LED_PIN 35            // AtomS3 LED is GPIO35 (G35)
-#define WIFI_RESET_BTN_PIN 41 // AtomS3 button is GPIO41 (G41)
-#else
-#define MY_RX1 22
-#define MY_TX1 23
-#define MY_RX2 21
-#define MY_TX2 25
-#define LED_PIN 27            // M5Atom LED is GPIO27 (G27)
-#define WIFI_RESET_BTN_PIN 39 // M5Atom button is GPIO39
-#endif
-#define CIV_ADDRESS 0xC0 // CI-V controller address
+// User-definable Serial port pin assignments and CI-V settings are now in civ_config.h
 // -------------------------------------------------------------------------
 // setRgb implementation for Atom and AtomS3
 void setRgb(uint8_t r, uint8_t g, uint8_t b)
@@ -172,42 +219,19 @@ void setRgb(uint8_t r, uint8_t g, uint8_t b)
 }
 
 // -------------------------------------------------------------------------
-// Project Constants stored in flash (PROGMEM)
+// Project Constants now defined in civ_config.h
 // -------------------------------------------------------------------------
-const char NAME_PROGMEM[] PROGMEM = "ShackMate - CI-V Controller";
-const char VERSION_PROGMEM[] PROGMEM = "2.1.1";
-const char AUTHOR_PROGMEM[] PROGMEM = "Half Baked Circuits";
-const char MDNS_NAME_PROGMEM[] PROGMEM = "shackmate-civ";
 
-// UDP Port definition
-#define UDP_PORT 4210
-
-// Undefine debug macros if previously defined
-#ifdef DBG_PRINT
-#undef DBG_PRINT
-#endif
-#ifdef DBG_PRINTLN
-#undef DBG_PRINTLN
-#endif
-#ifdef DBG_PRINTF
-#undef DBG_PRINTF
-#endif
 // -------------------------------------------------------------------------
-// Debug Macros (must be defined before use)
+// Constants
 // -------------------------------------------------------------------------
-#define DEBUG_SERIAL // Comment this line out to disable debug prints
-#ifdef DEBUG_SERIAL
-#define DBG_PRINT(...) Serial.print(__VA_ARGS__)
-#define DBG_PRINTLN(...) Serial.println(__VA_ARGS__)
-#define DBG_PRINTF(...) Serial.printf(__VA_ARGS__)
-#else
-#define DBG_PRINT(...) ((void)0)
-#define DBG_PRINTLN(...) ((void)0)
-#define DBG_PRINTF(...) ((void)0)
-#endif
-// -------------------------------------------------------------------------
-// Forward declaration for setRgb (must be before any use)
-void setRgb(uint8_t r, uint8_t g, uint8_t b);
+const unsigned long DISCOVERY_INTERVAL_MS = 2000;
+const unsigned long WIFI_RESET_HOLD_TIME_MS = 5000;
+const unsigned long OTA_BLINK_INTERVAL_MS = 200;
+const int WIFI_CONNECTION_ATTEMPTS = 30;
+const int WIFI_BLINK_DELAY_MS = 250;
+const size_t TCP_PACKET_BUFFER_SIZE = 128;
+const int WATCHDOG_TIMEOUT_SECONDS = 10;
 
 // -------------------------------------------------------------------------
 // Global Objects & Variables
@@ -217,9 +241,8 @@ WiFiUDP udp;
 String deviceIP = "";
 String civBaud = "19200";
 
-// WebSocket connection attempt flag
-bool wsConnectPending = false;
-unsigned long bootTime = 0;
+// DeviceState will handle uptime tracking
+// bootTime removed, managed by DeviceState now
 // --- Serial2 CI-V frame buffer (fixed size) ---
 #define MAX_CIV_FRAME 64
 static char serial2Buf[MAX_CIV_FRAME];
@@ -230,16 +253,10 @@ WebSocketsClient webClient;
 
 bool otaInProgress = false;
 
-// Mutex for protecting shared serial message strings
+// Mutex for protecting shared serial message strings (for potential future use)
 portMUX_TYPE serialMsgMutex = portMUX_INITIALIZER_UNLOCKED;
 
-// Independent message tracking for each serial port to prevent cross-forwarding
-String lastSerial1OutMsg = "";
-String lastSerial2OutMsg = "";
-
-// WebSocket duplicate message prevention
-String lastWsInMsg = "";
-unsigned long lastWsInTime = 0;
+// These variables were unused and have been removed to clean up the code
 
 // -------------------------------------------------------------------------
 // Connection state machine for discovery and WebSocket management
@@ -253,30 +270,74 @@ ConnState connectionState = DISCOVERING;
 String lastDiscoveredIP = "";
 String lastDiscoveredPort = "";
 unsigned long lastDiscoveryAttempt = 0;
+bool wsConnectPending = false;
 
 // -------------------------------------------------------------------------
 // Function Prototypes
 // -------------------------------------------------------------------------
 String toHexUpper(const char *data, int len);
-String getUptime();
-String getChipID();
-int getChipRevision();
-uint32_t getFlashSize();
-uint32_t getPsramSize();
-int getCpuFrequency();
-uint32_t getFreeHeap();
-uint32_t getTotalHeap();
-uint32_t getSketchSize();
-uint32_t getFreeSketchSpace();
-float readInternalTemperature();
+// Use DeviceState system info functions instead of manual ones
+// String getUptime(); - now use DeviceState::getUptime()
+// System info now managed by DeviceState::getSystemInfo()
 
 // Task function for CI-V/UDP/TCP processing (runs on Core 1)
 // myTaskDebug will be run on Core 1 (CI-V/UDP only)
 void myTaskDebug(void *parameter);
-// core0Task (system monitoring, if needed) runs on Core 0 (optional)
-void core0Task(void *parameter);
 // core1UdpOtpTask: remains on Core 1 if needed (optional)
 void core1UdpOtpTask(void *parameter);
+
+// -------------------------------------------------------------------------
+// Helper Function Implementations
+// -------------------------------------------------------------------------
+void initFileSystem()
+{
+  if (!LittleFS.begin())
+  {
+    Logger::error("Failed to mount LittleFS filesystem");
+    return;
+  }
+  Logger::info("LittleFS filesystem mounted successfully");
+}
+
+void resetAllStats()
+{
+  stat_serial1_frames = 0;
+  stat_serial1_valid = 0;
+  stat_serial1_invalid = 0;
+  stat_serial1_broadcast = 0;
+  stat_serial2_frames = 0;
+  stat_serial2_valid = 0;
+  stat_serial2_invalid = 0;
+  stat_serial2_broadcast = 0;
+  stat_ws_rx = 0;
+  stat_ws_tx = 0;
+  stat_ws_dup = 0;
+  Logger::info("All statistics reset to zero");
+}
+
+bool isValidBaudRate(const String &baud)
+{
+  int baudInt = baud.toInt();
+  return (baudInt == 1200 || baudInt == 2400 || baudInt == 4800 ||
+          baudInt == 9600 || baudInt == 19200 || baudInt == 38400 ||
+          baudInt == 57600 || baudInt == 115200);
+}
+
+void checkMemoryHealth()
+{
+  uint32_t freeHeap = ESP.getFreeHeap();
+  uint32_t minFreeHeap = ESP.getMinFreeHeap();
+
+  if (freeHeap < 10240)
+  { // Less than 10KB free
+    Logger::warning("Low memory warning: " + String(freeHeap) + " bytes free");
+  }
+
+  if (minFreeHeap < 5120)
+  { // Minimum ever was less than 5KB
+    Logger::error("Critical memory condition detected: min " + String(minFreeHeap) + " bytes");
+  }
+}
 
 // -------------------------------------------------------------------------
 // Function Definitions
@@ -301,27 +362,9 @@ String toHexUpper(const char *data, int len)
 // -------------------------------------------------------------------------
 // System Info Functions
 // -------------------------------------------------------------------------
-String getUptime()
-{
-  unsigned long now = millis();
-  unsigned long secs = (now - bootTime) / 1000;
-  unsigned long days = secs / 86400;
-  secs %= 86400;
-  unsigned long hours = secs / 3600;
-  secs %= 3600;
-  unsigned long mins = secs / 60;
-  secs %= 60;
-  char buf[50];
-  if (days > 0)
-  {
-    sprintf(buf, "%lu days %lu hrs %lu mins %lu secs", days, hours, mins, secs);
-  }
-  else
-  {
-    sprintf(buf, "%lu hrs %lu mins %lu secs", hours, mins, secs);
-  }
-  return String(buf);
-}
+// getUptime() function removed - now using DeviceState::getUptime()
+
+// System info functions replaced by ShackMateCore DeviceState where possible
 
 String getChipID()
 {
@@ -329,21 +372,6 @@ String getChipID()
   char idString[17];
   sprintf(idString, "%04X%08X", (uint16_t)(chipid >> 32), (uint32_t)chipid);
   return String(idString);
-}
-
-int getChipRevision()
-{
-  return ESP.getChipRevision();
-}
-
-uint32_t getFlashSize()
-{
-  return ESP.getFlashChipSize();
-}
-
-uint32_t getPsramSize()
-{
-  return psramFound() ? ESP.getPsramSize() : 0;
 }
 
 int getCpuFrequency()
@@ -356,9 +384,9 @@ uint32_t getFreeHeap()
   return ESP.getFreeHeap();
 }
 
-uint32_t getTotalHeap()
+uint32_t getFlashSize()
 {
-  return heap_caps_get_total_size(MALLOC_CAP_8BIT);
+  return ESP.getFlashChipSize();
 }
 
 uint32_t getSketchSize()
@@ -371,41 +399,41 @@ uint32_t getFreeSketchSpace()
   return ESP.getFreeSketchSpace();
 }
 
-float readInternalTemperature()
-{
-  return 42.0; // Dummy value; use an external sensor for real measurements.
-}
-
-// Broadcast the dashboard status JSON to all /ws clients
+// Broadcast the dashboard status JSON to all /ws clients using ShackMateCore
 void broadcastStatus()
 {
-  String status = "{";
-  status += "\"ip\":\"" + deviceIP + "\",";
-  status += "\"ws_status\":\"" + String((connectionState == CONNECTED) ? "connected" : "disconnected") + "\",";
-  status += "\"ws_status_clients\":" + String(getWsClientCount()) + ",";
-  status += "\"version\":\"" + String(FPSTR(VERSION_PROGMEM)) + "\",";
-  status += "\"uptime\":\"" + getUptime() + "\",";
-  status += "\"chip_id\":\"" + getChipID() + "\",";
-  status += "\"cpu_freq\":\"" + String(getCpuFrequency()) + "\",";
-  status += "\"free_heap\":\"" + String(getFreeHeap() / 1024) + "\",";
-  status += "\"civ_baud\":\"" + civBaud + "\",";
-  status += "\"civ_addr\":\"0x" + String(CIV_ADDRESS, HEX) + "\",";
-  status += "\"serial1\":\"RX=" + String(MY_RX1) + " TX=" + String(MY_TX1) + "\",";
-  status += "\"serial2\":\"RX=" + String(MY_RX2) + " TX=" + String(MY_TX2) + "\",";
+  DynamicJsonDocument doc(1024);
+  doc["ip"] = deviceIP;
+  doc["ws_status"] = (connectionState == CONNECTED) ? "connected" : "disconnected";
+  doc["ws_status_clients"] = getWsClientCount();
+  doc["ws_server_ip"] = lastDiscoveredIP.length() > 0 ? lastDiscoveredIP : "Not discovered";
+  doc["ws_server_port"] = lastDiscoveredPort.length() > 0 ? lastDiscoveredPort : "";
+  doc["version"] = String(VERSION);
+  doc["uptime"] = DeviceState::getUptime();
+  // Use ShackMateCore system info where possible
+  doc["chip_id"] = getChipID();
+  doc["cpu_freq"] = String(getCpuFrequency());
+  doc["free_heap"] = String(getFreeHeap() / 1024);
+  doc["civ_baud"] = civBaud;
+  doc["civ_addr"] = "0x" + String(CIV_ADDRESS, HEX);
+  doc["serial1"] = "RX=" + String(MY_RX1) + " TX=" + String(MY_TX1);
+  doc["serial2"] = "RX=" + String(MY_RX2) + " TX=" + String(MY_TX2);
   // Communications statistics
-  status += "\"serial1_frames\":" + String(stat_serial1_frames) + ",";
-  status += "\"serial1_valid\":" + String(stat_serial1_valid) + ",";
-  status += "\"serial1_invalid\":" + String(stat_serial1_invalid) + ",";
-  status += "\"serial1_broadcast\":" + String(stat_serial1_broadcast) + ",";
-  status += "\"serial2_frames\":" + String(stat_serial2_frames) + ",";
-  status += "\"serial2_valid\":" + String(stat_serial2_valid) + ",";
-  status += "\"serial2_invalid\":" + String(stat_serial2_invalid) + ",";
-  status += "\"serial2_broadcast\":" + String(stat_serial2_broadcast) + ",";
-  status += "\"ws_rx\":" + String(stat_ws_rx) + ",";
-  status += "\"ws_tx\":" + String(stat_ws_tx) + ",";
-  status += "\"ws_dup\":" + String(stat_ws_dup) + ",";
-  status += "\"ws_status_updated\":" + String(millis());
-  status += "}";
+  doc["serial1_frames"] = stat_serial1_frames;
+  doc["serial1_valid"] = stat_serial1_valid;
+  doc["serial1_invalid"] = stat_serial1_invalid;
+  doc["serial1_broadcast"] = stat_serial1_broadcast;
+  doc["serial2_frames"] = stat_serial2_frames;
+  doc["serial2_valid"] = stat_serial2_valid;
+  doc["serial2_invalid"] = stat_serial2_invalid;
+  doc["serial2_broadcast"] = stat_serial2_broadcast;
+  doc["ws_rx"] = stat_ws_rx;
+  doc["ws_tx"] = stat_ws_tx;
+  doc["ws_dup"] = stat_ws_dup;
+  doc["ws_status_updated"] = millis();
+
+  String status;
+  serializeJson(doc, status);
   wsServer.textAll(status);
 }
 
@@ -416,10 +444,7 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   if (type == WStype_CONNECTED)
   {
     wsConnectPending = false;
-    Serial.print("WebSocket client connected to ");
-    Serial.print(lastDiscoveredIP);
-    Serial.print(":");
-    Serial.println(lastDiscoveredPort);
+    Logger::info("WebSocket client connected to " + lastDiscoveredIP + ":" + lastDiscoveredPort);
     setRgb(0, 0, 64); // BLUE on websocket connect
     connectionState = CONNECTED;
     broadcastStatus();
@@ -428,7 +453,7 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   if (type == WStype_DISCONNECTED)
   {
     wsConnectPending = false;
-    Serial.println("WebSocket client disconnected. Returning to discovery.");
+    Logger::info("WebSocket client disconnected. Returning to discovery.");
     if (WiFi.isConnected())
     {
       setRgb(0, 64, 0); // GREEN if still on WiFi
@@ -448,22 +473,12 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   String msg((char *)payload, length);
   msg.trim();
 
-  // Validate hex format (optional)
-  bool isHex = true;
-  for (size_t i = 0; i < msg.length(); i++)
+  // Validate hex format
+  if (!isValidHexMessage(msg))
   {
-    char c = msg.charAt(i);
-    if (!((c >= '0' && c <= '9') ||
-          (c >= 'A' && c <= 'F') ||
-          (c >= 'a' && c <= 'f') ||
-          c == ' '))
-    {
-      isHex = false;
-      break;
-    }
-  }
-  if (!isHex || msg.length() < 4)
+    Logger::warning("Invalid hex message received: " + msg);
     return;
+  }
 
   // Count RX if valid message
   stat_ws_rx++;
@@ -482,7 +497,7 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   Serial2.write(buffer, byteCount);
   Serial2.flush();
 
-  Serial.printf("WebSocket -> Serial1 & Serial2: %s\n", msg.c_str());
+  Logger::debug("WebSocket -> Serial1 & Serial2: " + msg);
 }
 
 // -------------------------------------------------------------------------
@@ -771,420 +786,8 @@ void myTaskDebug(void *parameter)
 }
 
 // -------------------------------------------------------------------------
-// Core 0 task stub (system monitoring, optional)
+// REMOVED: generateInfoPage function - now serving static files from /data
 // -------------------------------------------------------------------------
-// If system monitoring or other tasks are needed on Core 0, use this.
-void core0Task(void *parameter)
-{
-  esp_task_wdt_add(NULL); // Add this task to watchdog
-  for (;;)
-  {
-    esp_task_wdt_reset(); // Feed watchdog for this task
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-  }
-}
-
-// -------------------------------------------------------------------------
-// Generate Info Page Function
-// -------------------------------------------------------------------------
-String generateInfoPage()
-{
-  String html = R"(<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>)" + String(FPSTR(NAME_PROGMEM)) +
-                R"( - Status</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #333; min-height: 100vh; padding: 20px;
-        }
-        .container {
-            max-width: 1000px; margin: 0 auto;
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 15px; padding: 30px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-            backdrop-filter: blur(10px);
-        }
-        .header {
-            text-align: center; margin-bottom: 30px;
-            border-bottom: 2px solid #e0e0e0; padding-bottom: 20px;
-        }
-        .header h1 {
-            color: #2c3e50; font-size: 2.5em; font-weight: 300; margin-bottom: 10px;
-        }
-        .version { color: #7f8c8d; font-size: 1.1em; }
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        .card {
-            background: #f8f9fa;
-            border-radius: 10px;
-            padding: 20px;
-            border-left: 4px solid #3498db;
-            box-shadow: 0 2px 8px rgba(52,152,219,0.06);
-            margin-bottom: 0;
-        }
-        .card h3 {
-            color: #2c3e50;
-            margin-bottom: 15px;
-            font-size: 1.3em;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 0.5em;
-            letter-spacing: 0.01em;
-        }
-        .info-row {
-            display: flex; justify-content: space-between; margin-bottom: 8px;
-            padding: 5px 0; border-bottom: 1px solid #ecf0f1;
-        }
-        .info-label { font-weight: 600; color: #34495e; }
-        .info-value { color: #2c3e50; font-family: monospace; }
-        .status {
-            padding: 4px 8px; border-radius: 4px; font-size: 0.9em; font-weight: bold;
-        }
-        .status.connected { background: #d4edda; color: #155724; }
-        .status.disconnected { background: #f8d7da; color: #721c24; }
-        .status.listening { background: #fff3cd; color: #856404; }
-        .footer {
-            display: none;
-        }
-        .footer-centered {
-            text-align: center;
-            color: #666;
-            font-size: 1em;
-            margin: 40px 0 10px 0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-        .auto-refresh {
-            position: fixed; top: 20px; right: 20px;
-            background: rgba(0, 0, 0, 0.7); color: white;
-            padding: 10px 15px; border-radius: 20px; font-size: 0.9em;
-        }
-        .stat-label {
-            font-weight: 700;
-            font-size: 1.4em;
-            color: #2c3e50;
-            min-width: 160px;
-            display: inline-block;
-            margin-right: 16px;
-        }
-        .stat-value {
-            font-size: 1.18em;
-            font-weight: 500;
-            color: #222b38;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            letter-spacing: 0.02em;
-        }
-        .comm-small {
-            max-width: 350px;
-            min-width: 0;
-            margin-bottom: 0;
-        }
-    </style>
-    <script>
-        // Update the timestamp every second in h:mm:ss AM/PM format
-        function updateTimestamp() {
-            const now = new Date();
-            let hours = now.getHours();
-            const minutes = now.getMinutes().toString().padStart(2, '0');
-            const seconds = now.getSeconds().toString().padStart(2, '0');
-            const ampm = hours >= 12 ? 'PM' : 'AM';
-            hours = hours % 12;
-            hours = hours ? hours : 12;
-            const timeStr = hours + ':' + minutes + ':' + seconds + ' ' + ampm;
-            document.querySelectorAll('.timestamp').forEach(el => el.textContent = timeStr);
-        }
-
-        // Update WS status in DOM
-        function updateWsStatus(status, updatedMs) {
-            var wsElem = document.getElementById('ws-connection');
-            if (wsElem) {
-                wsElem.textContent = (status === 'connected') ? 'Connected' : 'Disconnected';
-                wsElem.className = 'status ' + (status === 'connected' ? 'connected' : 'disconnected');
-            }
-            var updElem = document.getElementById('ws-status-updated');
-            if (updElem) {
-                updElem.textContent = ""; // Optionally: "just now"
-            }
-        }
-
-        function updateStatusFromData(data) {
-            // Serial1 row
-            if (data.serial1_valid !== undefined && data.serial1_invalid !== undefined && data.serial1_broadcast !== undefined) {
-                var serial1StatsElem = document.getElementById('serial1-stats-values');
-                if (serial1StatsElem) {
-                    serial1StatsElem.innerHTML =
-                        '&#x2705; ' + data.serial1_valid +
-                        ' / &#x274C; ' + data.serial1_invalid +
-                        ' &nbsp;|&nbsp; &#x1F4E2; ' + data.serial1_broadcast;
-                }
-            }
-            // Serial2 row
-            if (data.serial2_valid !== undefined && data.serial2_invalid !== undefined && data.serial2_broadcast !== undefined) {
-                var serial2StatsElem = document.getElementById('serial2-stats-values');
-                if (serial2StatsElem) {
-                    serial2StatsElem.innerHTML =
-                        '&#x2705; ' + data.serial2_valid +
-                        ' / &#x274C; ' + data.serial2_invalid +
-                        ' &nbsp;|&nbsp; &#x1F4E2; ' + data.serial2_broadcast;
-                }
-            }
-            // WS row
-            if (data.ws_rx !== undefined && data.ws_tx !== undefined) {
-                var wsStatsElem = document.getElementById('ws-stats-values');
-                if (wsStatsElem) {
-                    wsStatsElem.textContent = 'RX ' + data.ws_rx + ' / TX ' + data.ws_tx;
-                }
-            }
-            if (data.ws_dup !== undefined) {
-                var wsDupElem = document.getElementById('ws-dup');
-                if (wsDupElem) wsDupElem.textContent = data.ws_dup;
-            }
-        }
-
-
-        document.addEventListener('DOMContentLoaded', function() {
-            updateTimestamp();
-            setInterval(updateTimestamp, 1000);
-
-            // --- WebSocket connection to ESP (no port, /ws path) ---
-            let ws;
-            let pingInterval = null; // NEW: Track our ping timer
-
-            function connectWS() {
-                ws = new WebSocket('ws://' + location.hostname + '/ws');
-                ws.onopen = function() {
-                    console.log('WebSocket connected');
-                    updateWsStatus('connected');
-                    // NEW: Start keep-alive ping
-                    if (pingInterval) clearInterval(pingInterval);
-                    pingInterval = setInterval(() => {
-                        if (ws.readyState === WebSocket.OPEN) ws.send('ping');
-                    }, 30000); // every 30 seconds
-                };
-                ws.onmessage = function(event) {
-                    // Expect JSON object with status values
-                    try {
-                        const data = JSON.parse(event.data);
-                        updateStatusFromData(data);
-                        if (data.ws_status) updateWsStatus(data.ws_status);
-                        if (data.uptime) document.getElementById('uptime').textContent = data.uptime;
-                    } catch (e) {
-                        // Not JSON or not a status update
-                    }
-                };
-                ws.onclose = function() {
-                    console.log('WebSocket closed, retrying in 5s...');
-                    updateWsStatus('disconnected');
-                    if (pingInterval) clearInterval(pingInterval); // NEW: Stop pinging
-                    setTimeout(connectWS, 5000);
-                };
-                ws.onerror = function(err) {
-                    console.error('WebSocket error:', err);
-                };
-            }
-            connectWS();
-
-            // --- Reset Stats button handler ---
-            document.getElementById('reset-stats-btn').addEventListener('click', function() {
-                fetch('/reset_stats', { method: 'POST' })
-                  .then(resp => resp.json())
-                  .then(data => console.log('Stats reset', data))
-                  .catch(err => console.error('Error resetting stats', err));
-            });
-        });
-    </script>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>)" +
-                String(FPSTR(NAME_PROGMEM)) + R"(</h1>
-            <div class="version">Version <span id="version">)" +
-                String(FPSTR(VERSION_PROGMEM)) + R"(</span></div>
-        </div>
-        
-        
-        <div class="grid">
-            <div class="card">
-                <h3><span style="font-size:1.5em;vertical-align:middle;display:inline-block;line-height:1;">📶</span> Network Status</h3>
-                <div class="info-row">
-                    <span class="info-label">IP Address:</span>
-                    <span class="info-value" id="ip-address">)" +
-                deviceIP + R"(</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">UDP Discovery:</span>
-                    <span class="status listening">Listening on port )" +
-                String(UDP_PORT) + R"(</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">WebSocket Server:</span>
-                    <span class="info-value">)" +
-                (lastDiscoveredIP.length() > 0 ? lastDiscoveredIP + ":" + lastDiscoveredPort : "Not discovered") + R"(</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">WS Connection:</span>
-                    <span class="status )" +
-                String((connectionState == CONNECTED) ? "connected" : "disconnected") + R"(" id="ws-connection">)" + String((connectionState == CONNECTED) ? "Connected" : "Disconnected") + R"(</span>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3><span style="font-size:1.5em;vertical-align:middle;display:inline-block;line-height:1;">🖥️</span> System Information</h3>
-                <div class="info-row">
-                    <span class="info-label">Chip ID:</span>
-                    <span class="info-value" id="chip-id">)" +
-                getChipID() + R"(</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">CPU Frequency:</span>
-                    <span class="info-value" id="cpu-freq">)" +
-                String(getCpuFrequency()) + R"( MHz</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Free Heap:</span>
-                    <span class="info-value" id="free-heap">)" +
-                String(getFreeHeap() / 1024) + R"( KB</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Uptime:</span>
-                    <span class="info-value" id="uptime">)" +
-                getUptime() + R"(</span>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3><span style="font-size:1.5em;vertical-align:middle;display:inline-block;line-height:1;">🔧</span> CI-V Configuration</h3>
-                <div class="info-row">
-                    <span class="info-label">Baud Rate:</span>
-                    <span class="info-value" id="civ-baud">)" +
-                civBaud + R"(</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">CI-V Address:</span>
-                    <span class="info-value" id="civ-addr">0x)" +
-                String(CIV_ADDRESS, HEX) + R"(</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Serial1 (A):</span>
-                    <span class="info-value" id="serial1">RX=)" +
-                String(MY_RX1) + R"( TX=)" + String(MY_TX1) + R"(</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Serial2 (B):</span>
-                    <span class="info-value" id="serial2">RX=)" +
-                String(MY_RX2) + R"( TX=)" + String(MY_TX2) + R"(</span>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3><span style="font-size:1.5em;vertical-align:middle;display:inline-block;line-height:1;">💾</span> Memory & Storage</h3>
-                <div class="info-row">
-                    <span class="info-label">Flash Size:</span>
-                    <span class="info-value">)" +
-                String(getFlashSize() / 1024) + R"( KB</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Sketch Size:</span>
-                    <span class="info-value">)" +
-                String(getSketchSize() / 1024) + R"( KB</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Free Space:</span>
-                    <span class="info-value">)" +
-                String(getFreeSketchSpace() / 1024) + R"( KB</span>
-                </div>
-            </div>
-        <div class="card comm-card comm-small">
-            <h3><span style="font-size:1.5em;vertical-align:middle;display:inline-block;line-height:1;">📡</span> Communications</h3>
-            <div class="info-row">
-                <span class="info-label">Serial1:</span>
-                <span class="info-value" id="serial1-stats-values">&#x2705; 0 / &#x274C; 0 &nbsp;|&nbsp; &#x1F4E2; 0</span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">Serial2:</span>
-                <span class="info-value" id="serial2-stats-values">&#x2705; 0 / &#x274C; 0 &nbsp;|&nbsp; &#x1F4E2; 0</span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">WS:</span>
-                <span class="info-value" id="ws-stats-values">RX 0 / TX 0</span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">WS: Duplicates Filtered</span>
-                <span class="info-value" id="ws-dup">0</span>
-            </div>
-            <button id="reset-stats-btn" style="padding:6px 10px;font-size:0.95em;cursor:pointer;margin-top:8px;width:90%;">
-                Reset Stats
-            </button>
-        </div>
-        </div>
-    <div class="footer-centered">
-      Half Baked Circuits &bull; Last updated: <span class="timestamp"></span>
-    </div>
-    </div>
-</body>
-</html>)";
-
-  return html;
-}
-
-// -------------------------------------------------------------------------
-// Template Processor Function for AsyncWebServer
-// -------------------------------------------------------------------------
-String processTemplate(const String &var)
-{
-  if (var == "PROJECT_NAME")
-    return String(FPSTR(NAME_PROGMEM));
-  if (var == "TIME")
-    return "--:--"; // Placeholder, or implement getCurrentTime()
-  if (var == "IP")
-    return WiFi.localIP().toString();
-  if (var == "WEBSOCKET_PORT")
-    return "4000";
-  if (var == "UDP_PORT")
-    return String(UDP_PORT);
-  if (var == "CIV_BAUD")
-    return civBaud;
-  if (var == "VERSION")
-    return String(FPSTR(VERSION_PROGMEM));
-  if (var == "UPTIME")
-    return getUptime();
-  if (var == "CHIP_ID")
-    return getChipID();
-  if (var == "CHIP_REV")
-    return String(getChipRevision());
-  if (var == "FLASH_TOTAL")
-    return String(getFlashSize());
-  if (var == "PSRAM_SIZE")
-    return String(getPsramSize());
-  if (var == "CPU_FREQ")
-    return String(getCpuFrequency());
-  if (var == "FREE_HEAP")
-    return String(getFreeHeap());
-  if (var == "MEM_USED")
-    return String(ESP.getHeapSize() - ESP.getFreeHeap());
-  if (var == "MEM_TOTAL")
-    return String(getTotalHeap());
-  if (var == "SKETCH_USED")
-    return String(ESP.getSketchSize());
-  if (var == "SKETCH_TOTAL")
-    return String(getSketchSize());
-  if (var == "TEMPERATURE_C")
-    return String(readInternalTemperature(), 2);
-  if (var == "TEMPERATURE_F")
-    return String(readInternalTemperature() * 9.0 / 5.0 + 32.0, 2);
-  return "--";
-}
 
 // -------------------------------------------------------------------------
 // Setup Function
@@ -1203,11 +806,29 @@ void setup()
   stat_ws_rx = 0;
   stat_ws_tx = 0;
   stat_ws_dup = 0;
+
   Serial.begin(115200);
-  DBG_PRINTLN("ShackMate CI-V: Booting...");
-  DBG_PRINTF("Reset reason: %d\n", esp_reset_reason());
+
+  // Initialize ShackMateCore Logger system
+  Logger::init(LogLevel::INFO);
+  Logger::enableSerial(true);
+
+  // Initialize ShackMateCore DeviceState management
+  DeviceState::init();
+  DeviceState::setBootTime(millis());
+
+  LOG_INFO("================================================");
+  LOG_INFO("        SHACKMATE CI-V CONTROLLER STARTING");
+  LOG_INFO("================================================");
+  LOG_INFO("Version: " + String(VERSION));
+  LOG_INFO("Boot time: " + String(DeviceState::getBootTime()) + "ms");
+  LOG_INFO("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
+  LOG_INFO("Reset reason: " + String(esp_reset_reason()));
+
+  // Validate configuration before proceeding
+  validateConfiguration();
+
   delay(1000);
-  bootTime = millis();
 #if defined(M5ATOM_S3) || defined(ARDUINO_M5Stack_ATOMS3)
   M5.begin(); // AtomS3: use default config
 #else
@@ -1217,53 +838,55 @@ void setup()
 
   pinMode(WIFI_RESET_BTN_PIN, INPUT);
 
-  WiFiManager wifiManager;
-  wifiManager.setAPCallback([&](WiFiManager *myWiFiManager)
-                            {
-    setRgb(64, 0, 64); // Purple (AP mode)
-    DBG_PRINTLN("Entered configuration mode (AP mode)");
-    IPAddress apIP = WiFi.softAPIP();
-    DBG_PRINT("AP IP: ");
-    DBG_PRINTLN(apIP.toString());
-    yield(); });
+  // Simple WiFi connection (replaces WiFiManager to avoid HTTP conflicts)
+  Logger::info("Starting WiFi connection...");
+  WiFi.mode(WIFI_STA);
+
+  // Try to connect to saved WiFi credentials
+  WiFi.begin();
 
   String storedCivBaud = "19200";
   preferences.begin("config", false);
   storedCivBaud = preferences.getString("civ_baud", "19200");
   preferences.end();
 
-  WiFiManagerParameter civBaudParam("civbaud", "CI-V Baud Rate", storedCivBaud.c_str(), 6);
-  wifiManager.addParameter(&civBaudParam);
-
   // Blinking green while trying to connect
   unsigned long blinkTimer = millis();
   bool connected = false;
-  for (int i = 0; i < 30; ++i)
+  for (int i = 0; i < WIFI_CONNECTION_ATTEMPTS; ++i)
   { // Up to ~15 sec
     setRgb(0, 32, 0);
-    delay(250);
+    delay(WIFI_BLINK_DELAY_MS);
     setRgb(0, 0, 0);
-    delay(250);
+    delay(WIFI_BLINK_DELAY_MS);
     if (WiFi.isConnected())
     {
       connected = true;
       break;
     }
   }
-  // Attempt to connect automatically; if fails, start config portal and halt
-  if (!wifiManager.autoConnect("ShackMate CI-V AP") && !connected)
+
+  // If connection failed, start AP mode for configuration
+  if (!connected)
   {
-    DBG_PRINTLN("Failed to connect, starting AP portal");
-    while (true)
-    {
-      delay(1000);
-    }
+    Logger::warning("WiFi connection failed, starting AP mode");
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("ShackMate CI-V AP");
+    setRgb(64, 0, 64); // Purple (AP mode)
+    Logger::info("AP started: ShackMate CI-V AP");
+    Logger::info("AP IP: " + WiFi.softAPIP().toString());
   }
+  else
+  {
+    Logger::info("WiFi connected successfully");
+    Logger::info("IP address: " + WiFi.localIP().toString());
+  }
+
   // At this point, WiFi is connected and you can proceed
   setRgb(0, 64, 0); // Green on successful WiFi connection
   // Ensure RGB is green when connected to WiFi and not yet connected to websocket
   deviceIP = WiFi.localIP().toString();
-  DBG_PRINTLN("Connected, IP address: " + deviceIP);
+  Logger::info("Connected, IP address: " + deviceIP);
   broadcastStatus();
 
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
@@ -1277,40 +900,94 @@ void setup()
     DBG_PRINTLN("Time synchronized");
   }
 
+  // Initialize file system and serve static files
+  initFileSystem();
+
+  // Serve main page with template replacement
   httpServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
                 {
-    String html = generateInfoPage();
+    if (!LittleFS.exists("/index.html")) {
+      request->send(404, "text/plain", "index.html not found");
+      return;
+    }
+    
+    File file = LittleFS.open("/index.html", "r");
+    String html = file.readString();
+    file.close();
+    
+    // Replace template variables
+    html.replace("%PROJECT_NAME%", NAME);
+    html.replace("%VERSION%", VERSION);
+    html.replace("%IP%", deviceIP);
+    html.replace("%UDP_PORT%", String(UDP_PORT));
+    html.replace("%CHIP_ID%", getChipID());
+    html.replace("%CPU_FREQ%", String(getCpuFrequency()));
+    html.replace("%FREE_HEAP%", String(getFreeHeap() / 1024));
+    html.replace("%UPTIME%", DeviceState::getUptime());
+    html.replace("%CIV_BAUD%", civBaud);
+    html.replace("%CIV_ADDR%", "0x" + String(CIV_ADDRESS, HEX));
+    html.replace("%SERIAL1%", "RX=" + String(MY_RX1) + " TX=" + String(MY_TX1));
+    html.replace("%SERIAL2%", "RX=" + String(MY_RX2) + " TX=" + String(MY_TX2));
+    html.replace("%FLASH_TOTAL%", String(getFlashSize() / 1024));
+    html.replace("%SKETCH_USED%", String(getSketchSize() / 1024));
+    html.replace("%SKETCH_FREE%", String(getFreeSketchSpace() / 1024));
+    
+    // Replace WebSocket server info with current discovered values
+    String wsServerInfo = "Not discovered";
+    if (lastDiscoveredIP.length() > 0) {
+      wsServerInfo = lastDiscoveredIP;
+      if (lastDiscoveredPort.length() > 0) {
+        wsServerInfo += ":" + lastDiscoveredPort;
+      }
+    }
+    html.replace("Not discovered", wsServerInfo);
+    
     request->send(200, "text/html", html); });
+
+  // Serve static CSS and JS files
+  httpServer.serveStatic("/style.css", LittleFS, "/style.css");
+  httpServer.serveStatic("/app.js", LittleFS, "/app.js");
+
   httpServer.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request)
                 {
                   request->send(204); // No Content
                 });
   httpServer.on("/reset_stats", HTTP_POST, [](AsyncWebServerRequest *req)
                 {
-      stat_serial1_frames = stat_serial1_valid = stat_serial1_invalid = stat_serial1_broadcast = 0;
-      stat_serial2_frames = stat_serial2_valid = stat_serial2_invalid = stat_serial2_broadcast = 0;
-      stat_ws_rx = stat_ws_tx = stat_ws_dup = 0;
-      req->send(200, "application/json", "{\"status\":\"ok\"}");
+      resetAllStats();
+      DynamicJsonDocument doc(128);
+      doc["status"] = "ok";
+      String response;
+      serializeJson(doc, response);
+      req->send(200, "application/json", response);
       broadcastStatus(); });
   httpServer.addHandler(&wsServer);
   httpServer.begin();
   DBG_PRINTLN("HTTP server started on port 80");
 
-  if (!MDNS.begin(MDNS_NAME_PROGMEM))
+  if (!MDNS.begin(MDNS_NAME))
   {
     DBG_PRINTLN("Error setting up mDNS responder!");
   }
   else
   {
     DBG_PRINT("mDNS responder started: http://");
-    DBG_PRINT(FPSTR(MDNS_NAME_PROGMEM));
+    Logger::debug("mDNS name: " + String(MDNS_NAME));
     DBG_PRINTLN(".local");
   }
 
   udp.begin(UDP_PORT);
 
   preferences.begin("config", false);
-  civBaud = civBaudParam.getValue();
+  civBaud = storedCivBaud;
+
+  // Validate baud rate
+  if (!isValidBaudRate(civBaud))
+  {
+    Logger::warning("Invalid baud rate specified: " + civBaud + ", using default 19200");
+    civBaud = "19200";
+  }
+
   preferences.putString("civ_baud", civBaud);
   preferences.end();
   broadcastStatus();
@@ -1337,15 +1014,15 @@ void setup()
                         {
     static unsigned long lastBlink = 0;
     static bool ledState = false;
-    if (millis() - lastBlink > 200) { // Blink every 200ms
+    if (millis() - lastBlink > OTA_BLINK_INTERVAL_MS) { // Blink every 200ms
       ledState = !ledState;
       setRgb(ledState ? 64 : 0, ledState ? 64 : 0, ledState ? 64 : 0); // Blink white
       lastBlink = millis();
     }
-    DBG_PRINTF("OTA Progress: %u%%\r", (progress * 100) / total); });
+    Logger::info("OTA Progress: " + String((progress * 100) / total) + "%"); });
   ArduinoOTA.onError([](ota_error_t error)
                      {
-    DBG_PRINTF("OTA Error[%u]: ", error);
+    Logger::error("OTA Error: " + String(error));
     if (error == OTA_AUTH_ERROR) DBG_PRINTLN("Authentication Failed");
     else if (error == OTA_BEGIN_ERROR) DBG_PRINTLN("Begin Failed");
     else if (error == OTA_CONNECT_ERROR) DBG_PRINTLN("Connect Failed");
@@ -1367,11 +1044,11 @@ void setup()
   Serial1.setRxBufferSize(1024);
   Serial1.setTxBufferSize(1024);
   Serial1.begin(baud, SERIAL_8N1, MY_RX1, MY_TX1);
-  DBG_PRINTF("Serial1 (CI-V (A)) started at %d baud on RX=%d TX=%d (1KB buffers)\n", baud, MY_RX1, MY_TX1);
+  Logger::info("Serial1 (CI-V (A)) started at " + String(baud) + " baud on RX=" + String(MY_RX1) + " TX=" + String(MY_TX1) + " (1KB buffers)");
   Serial2.setRxBufferSize(1024);
   Serial2.setTxBufferSize(1024);
   Serial2.begin(baud, SERIAL_8N1, MY_RX2, MY_TX2);
-  DBG_PRINTF("Serial2 (CI-V (B)) started at %d baud on RX=%d TX=%d (1KB buffers)\n", baud, MY_RX2, MY_TX2);
+  Logger::info("Serial2 (CI-V (B)) started at " + String(baud) + " baud on RX=" + String(MY_RX2) + " TX=" + String(MY_TX2) + " (1KB buffers)");
 
   // -------------------------------------------------------------------------
   // TASK/CORE ALLOCATION:
@@ -1384,12 +1061,16 @@ void setup()
   BaseType_t result = xTaskCreatePinnedToCore(myTaskDebug, "ciV_UDP_Task", 4096, NULL, 1, NULL, 1);
   if (result != pdPASS)
   {
-    DBG_PRINTLN("Failed to create ciV_UDP_Task!");
+    Logger::error("Failed to create ciV_UDP_Task!");
+    ESP.restart(); // Restart if critical task creation fails
   }
-  // [Optional] Start core0Task for system monitoring on Core 0
-  // xTaskCreatePinnedToCore(core0Task, "core0Task", 2048, NULL, 1, NULL, 0);
+
   // Start core 1 UDP/OTP broadcast task (remains on Core 1 if needed)
-  xTaskCreatePinnedToCore(core1UdpOtpTask, "core1UdpOtpTask", 6144, NULL, 1, NULL, 1);
+  result = xTaskCreatePinnedToCore(core1UdpOtpTask, "core1UdpOtpTask", 6144, NULL, 1, NULL, 1);
+  if (result != pdPASS)
+  {
+    Logger::warning("Failed to create core1UdpOtpTask - continuing without it");
+  }
 
   // Enable 10-second watchdog for loop() task (runs on Core 0)
   esp_task_wdt_init(10, true); // 10s timeout, panic if not fed
@@ -1414,21 +1095,24 @@ void loop()
   if (tcpClient)
   {
     // Echo a basic dashboard status as JSON, one per connection, including ws_status_updated
-    String tcpStatus = "{";
-    tcpStatus += "\"ip\":\"" + deviceIP + "\",";
-    tcpStatus += "\"ws_status\":\"" + String((connectionState == CONNECTED) ? "connected" : "disconnected") + "\",";
-    tcpStatus += "\"ws_status_clients\":" + String(getWsClientCount()) + ",";
-    tcpStatus += "\"version\":\"" + String(FPSTR(VERSION_PROGMEM)) + "\",";
-    tcpStatus += "\"uptime\":\"" + getUptime() + "\",";
-    tcpStatus += "\"chip_id\":\"" + getChipID() + "\",";
-    tcpStatus += "\"cpu_freq\":\"" + String(getCpuFrequency()) + "\",";
-    tcpStatus += "\"free_heap\":\"" + String(getFreeHeap() / 1024) + "\",";
-    tcpStatus += "\"civ_baud\":\"" + civBaud + "\",";
-    tcpStatus += "\"civ_addr\":\"0x" + String(CIV_ADDRESS, HEX) + "\",";
-    tcpStatus += "\"serial1\":\"RX=" + String(MY_RX1) + " TX=" + String(MY_TX1) + "\",";
-    tcpStatus += "\"serial2\":\"RX=" + String(MY_RX2) + " TX=" + String(MY_TX2) + "\",";
-    tcpStatus += "\"ws_status_updated\":" + String(millis());
-    tcpStatus += "}\n";
+    DynamicJsonDocument tcpDoc(1024);
+    tcpDoc["ip"] = deviceIP;
+    tcpDoc["ws_status"] = (connectionState == CONNECTED) ? "connected" : "disconnected";
+    tcpDoc["ws_status_clients"] = getWsClientCount();
+    tcpDoc["version"] = String(VERSION);
+    tcpDoc["uptime"] = DeviceState::getUptime();
+    tcpDoc["chip_id"] = getChipID();
+    tcpDoc["cpu_freq"] = String(getCpuFrequency());
+    tcpDoc["free_heap"] = String(getFreeHeap() / 1024);
+    tcpDoc["civ_baud"] = civBaud;
+    tcpDoc["civ_addr"] = "0x" + String(CIV_ADDRESS, HEX);
+    tcpDoc["serial1"] = "RX=" + String(MY_RX1) + " TX=" + String(MY_TX1);
+    tcpDoc["serial2"] = "RX=" + String(MY_RX2) + " TX=" + String(MY_TX2);
+    tcpDoc["ws_status_updated"] = millis();
+
+    String tcpStatus;
+    serializeJson(tcpDoc, tcpStatus);
+    tcpStatus += "\n";
     tcpClient.print(tcpStatus);
     // Simple: close connection after sending
     tcpClient.stop();
@@ -1440,13 +1124,13 @@ void loop()
   // Auto discovery and connection management
   if (connectionState == DISCOVERING)
   {
-    if (now - lastDiscoveryAttempt > 2000)
+    if (now - lastDiscoveryAttempt > DISCOVERY_INTERVAL_MS)
     {
       lastDiscoveryAttempt = now;
       int packetSize = udp.parsePacket();
       if (packetSize > 0)
       {
-        char packetBuffer[128];
+        char packetBuffer[TCP_PACKET_BUFFER_SIZE];
         int len = udp.read(packetBuffer, sizeof(packetBuffer) - 1);
         if (len > 0)
         {
@@ -1458,13 +1142,11 @@ void loop()
             int secondComma = msg.indexOf(',', firstComma + 1);
             String ip = msg.substring(firstComma + 1, secondComma);
             String port = msg.substring(secondComma + 1);
-            Serial.print("Discovered ShackMate IP: ");
-            Serial.print(ip);
-            Serial.print(" Port: ");
-            Serial.println(port);
+            Logger::info("Discovered ShackMate IP: " + ip + " Port: " + port);
             lastDiscoveredIP = ip;
             lastDiscoveredPort = port;
             connectionState = CONNECTING;
+            broadcastStatus(); // Immediately update web UI with discovered server info
           }
         }
       }
@@ -1473,10 +1155,7 @@ void loop()
 
   if (connectionState == CONNECTING && lastDiscoveredIP.length() && lastDiscoveredPort.length() && !wsConnectPending)
   {
-    Serial.print("Attempting WebSocket connection to ");
-    Serial.print(lastDiscoveredIP);
-    Serial.print(":");
-    Serial.println(lastDiscoveredPort);
+    Logger::info("Attempting WebSocket connection to " + lastDiscoveredIP + ":" + lastDiscoveredPort);
     webClient.begin(lastDiscoveredIP, lastDiscoveredPort.toInt(), "/");
     wsConnectPending = true;
     // Wait for CONNECTED/DISCONNECTED event
@@ -1495,14 +1174,14 @@ void loop()
       wifiResetPressStart = millis();
       wifiResetActive = true;
     }
-    else if (millis() - wifiResetPressStart >= 5000)
+    else if (millis() - wifiResetPressStart >= WIFI_RESET_HOLD_TIME_MS)
     {
       // Erase WiFi creds after 5 second hold
       preferences.begin("wifi", false);
       preferences.clear();
       preferences.end();
       WiFi.disconnect(true, true);
-      Serial.println("WiFi credentials erased! Rebooting in 2 seconds...");
+      Logger::warning("WiFi credentials erased! Rebooting in 2 seconds...");
       setRgb(255, 140, 0); // Orange for erase event
       broadcastStatus();
       delay(2000);
@@ -1514,6 +1193,22 @@ void loop()
     wifiResetActive = false;
   }
   esp_task_wdt_reset(); // Feed after button check
+
+  // Periodic memory health check (every 30 seconds)
+  static unsigned long lastMemoryCheck = 0;
+  if (now - lastMemoryCheck > 30000)
+  {
+    checkMemoryHealth();
+    lastMemoryCheck = now;
+  }
+
+  // Periodic status update (every 2 seconds) to keep uptime current
+  static unsigned long lastStatusUpdate = 0;
+  if (now - lastStatusUpdate > 2000)
+  {
+    broadcastStatus();
+    lastStatusUpdate = now;
+  }
 
   esp_task_wdt_reset(); // Feed after status push
 
@@ -1530,3 +1225,5 @@ void core1UdpOtpTask(void *parameter)
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
+
+// -------------------------------------------------------------------------

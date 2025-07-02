@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%PROJECT_NAME% - Status</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>%PROJECT_NAME%</h1>
+            <div class="version">Version <span id="version">%VERSION%</span></div>
+        </div>
+        
+        <div class="grid">
+            <div class="card">
+                <h3><span class="icon">📶</span> Network Status</h3>
+                <div class="info-row">
+                    <span class="info-label">IP Address:</span>
+                    <span class="info-value" id="ip-address">%IP%</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">UDP Discovery:</span>
+                    <span class="status listening">Listening on port %UDP_PORT%</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">WebSocket Server:</span>
+                    <span class="info-value" id="ws-server">Not discovered</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">WS Connection:</span>
+                    <span class="status disconnected" id="ws-connection">Disconnected</span>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3><span class="icon">🖥️</span> System Information</h3>
+                <div class="info-row">
+                    <span class="info-label">Chip ID:</span>
+                    <span class="info-value" id="chip-id">%CHIP_ID%</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">CPU Frequency:</span>
+                    <span class="info-value" id="cpu-freq">%CPU_FREQ% MHz</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Free Heap:</span>
+                    <span class="info-value" id="free-heap">%FREE_HEAP% KB</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Uptime:</span>
+                    <span class="info-value" id="uptime">%UPTIME%</span>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3><span class="icon">🔧</span> CI-V Configuration</h3>
+                <div class="info-row">
+                    <span class="info-label">Baud Rate:</span>
+                    <span class="info-value" id="civ-baud">%CIV_BAUD%</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">CI-V Address:</span>
+                    <span class="info-value" id="civ-addr">%CIV_ADDR%</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Serial1 (A):</span>
+                    <span class="info-value" id="serial1">%SERIAL1%</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Serial2 (B):</span>
+                    <span class="info-value" id="serial2">%SERIAL2%</span>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3><span class="icon">💾</span> Memory & Storage</h3>
+                <div class="info-row">
+                    <span class="info-label">Flash Size:</span>
+                    <span class="info-value">%FLASH_TOTAL% KB</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Sketch Size:</span>
+                    <span class="info-value">%SKETCH_USED% KB</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Free Space:</span>
+                    <span class="info-value">%SKETCH_FREE% KB</span>
+                </div>
+            </div>
+
+            <div class="card comm-card comm-small">
+                <h3><span class="icon">📡</span> Communications</h3>
+                <div class="info-row">
+                    <span class="info-label">Serial1:</span>
+                    <span class="info-value" id="serial1-stats-values">✅ 0 / ❌ 0 | 📢 0</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Serial2:</span>
+                    <span class="info-value" id="serial2-stats-values">✅ 0 / ❌ 0 | 📢 0</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">WS:</span>
+                    <span class="info-value" id="ws-stats-values">RX 0 / TX 0</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">WS: Duplicates Filtered</span>
+                    <span class="info-value" id="ws-dup">0</span>
+                </div>
+                <button id="reset-stats-btn" class="reset-btn">Reset Stats</button>
+            </div>
+        </div>
+        
+        <div class="footer-centered">
+            Half Baked Circuits &bull; Last updated: <span class="timestamp"></span>
+        </div>
+    </div>
+    
+    <script src="/app.js"></script>
+</body>
+</html>
