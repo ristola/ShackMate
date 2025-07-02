@@ -9,10 +9,19 @@ A smart power outlet controller designed for ham radio operators and electronics
 The firmware has undergone significant improvements to enhance reliability, maintainability, and protocol compliance:
 
 #### CI-V Protocol Enhancements
+
+- **Custom CI-V Handler**: Replaced legacy SMCIV library with project-specific `CivHandler` class
 - **Echo Loop Prevention**: Prevents infinite response loops in multi-device networks
 - **Broadcast Deduplication**: Eliminates duplicate responses within 1-second windows
 - **Protocol Compliance**: Full validation of CI-V message formats with comprehensive error handling
 - **Smart Message Routing**: CI-V responses only sent via remote WebSocket clients, not web UI
+- **Voltage Reading Fix**: Consistent calibrated voltage readings across all interfaces (web UI and WebSocket)
+- **Current Reading Fix**: Zero current display when no load present, preventing false calibrated readings
+- **Power Calculation Fix**: Aligned power validation thresholds with current validation for consistent readings
+- **Sensor Reading Fix**: Standardized lux calculations and added voltage-based current validation
+- **Lux Sensor Independence**: Identified and resolved software regression that caused lux sensor interference with power measurement circuits
+- **Independent Lux Polling**: Lux sensor now polls every 1 second, completely independent of power measurement routine (every 10 seconds)
+- **Lux Sensor Restoration**: Restored lux sensor to working state by implementing identical reading logic to original working version
 
 #### Network Reliability Improvements
 
@@ -173,6 +182,14 @@ The device implements full CI-V protocol support for ham radio equipment with ro
 { "command": "getCurrentCalibration" }  // Get current calibration info
 ```
 
+#### Power Calibration Commands
+
+```json
+{ "command": "calibratePower", "expectedPower": 76.0 }  // Calibrate with known power reading (watts)
+{ "command": "resetPowerCalibration" }  // Reset to default calibration
+{ "command": "getPowerCalibration" }  // Get current calibration info
+```
+
 #### Testing Commands
 
 ```json
@@ -203,6 +220,7 @@ Real-time monitoring of electrical parameters:
 - **HLW8012 Integration**: Hardware-based power measurement chip
 - **Voltage Calibration**: Software calibration for accurate voltage readings
 - **Current Calibration**: Software calibration for accurate current readings
+- **Power Calibration**: Direct power reading calibration for accurate wattage measurements
 - **Power Validation**: Automatic filtering of spurious power readings
 - **Real-time Updates**: Continuous monitoring with configurable intervals
 - **Persistent Calibration**: Calibration factors stored in non-volatile memory
@@ -231,18 +249,39 @@ Real-time monitoring of electrical parameters:
 4. **Calibration applies immediately** - all subsequent current readings use the new factor
 5. Calibration factor is saved to non-volatile memory and persists across reboots
 
-**Note**: The current calibration factor is applied in real-time to all current calculations, including those used for power validation and status updates. No device restart is required.
+#### Power Calibration Process
+
+1. Measure actual power with a calibrated power meter or calculate expected power (Voltage × Current for resistive loads)
+2. Send calibration command with the measured power:
+   ```json
+   { "command": "calibratePower", "expectedPower": 76.0 }
+   ```
+3. Device calculates and stores calibration factor automatically
+4. **Calibration applies immediately** - all subsequent power readings use the new factor
+5. Calibration factor is saved to non-volatile memory and persists across reboots
+
+**Note**: The power calibration factor is applied in real-time to all power calculations and status updates. No device restart is required.
 
 #### Power Reading Validation
 
 The system automatically validates power readings to prevent anomalies and uses calibrated sensor values:
 
-- **Current Threshold**: Power readings below 50mA current are set to 0W
+- **Current Threshold**: Power readings below 1mA current are set to 0W (aligned with current validation)
+- **Raw Current Filter**: Current readings below 1mA raw value are treated as zero (no load) before calibration
+- **Voltage-Based Current Validation**: When voltage drops below 1V, current is forced to zero regardless of sensor reading
 - **Maximum Power**: Readings above 2000W are considered spurious and filtered
 - **Maximum Current**: Current readings above 20A are capped for safety
-- **Power Factor Check**: Power readings exceeding apparent power by >20% are filtered
+- **Power Factor Check**: Power readings exceeding apparent power by >2.0x are filtered (increased tolerance for reactive loads)
 - **Calibrated Calculations**: All power validation uses calibrated voltage and current values
-- **Debug Logging**: All validation events are logged for troubleshooting
+- **Enhanced Debug Logging**: Detailed validation events, raw vs. validated readings, and power factor calculations
+- **Consistent Voltage Readings**: All interfaces (web UI initial load, WebSocket updates) now use calibrated voltage readings
+- **Zero Current Display**: When no load is present, current displays as 0.000A regardless of calibration factor
+- **Standardized Lux Calculation**: All lux sensor readings use consistent voltage conversion formula
+- **Lux Sensor Independence**: Restored lux sensor to working state by implementing independent polling schedule (1-second intervals)
+- **Lux Reading Isolation**: Completely separated lux sensor reading from power measurement routine to eliminate interference
+- **Power Calibration**: Direct power reading calibration for accurate wattage measurements independent of voltage/current calculations
+
+**Note**: Previous versions had inconsistencies in power/current threshold validation, sensor calculations, false readings when loads were disconnected, and overly strict power factor validation that could cause valid power readings to be rejected. These have been fixed to ensure all readings are accurate and consistent.
 
 ### 6. Web Interface Features
 

@@ -33,6 +33,7 @@ Debug/Maintenance Commands:
 #include <esp_task_wdt.h>     // For watchdog timer control during OTA
 #include <WebSocketsClient.h> // For client WebSocket connections
 #include <vector>             // For CI-V message data storage
+#include <driver/gpio.h>      // For explicit GPIO control
 
 // New modular components (now in ShackMateCore library)
 #include <config.h>
@@ -150,6 +151,8 @@ float voltageCalibrationFactor = 1.0f;
 bool voltageCalibrated = false;
 float currentCalibrationFactor = 1.0f;
 bool currentCalibrated = false;
+float powerCalibrationFactor = 1.0f;
+bool powerCalibrated = false;
 
 // Captive Portal mode flag and status LED variables
 bool captivePortalActive = false;
@@ -179,6 +182,23 @@ bool button2StateStable = false;
 float getValidatedCurrent()
 {
   float rawCurrent = hlw.getCurrent();
+
+  // Check voltage first - if no voltage, there should be no current
+  float rawVoltage = hlw.getVoltage();
+  if (rawVoltage < 1.0f) // If voltage is below 1V, treat as no power/no current
+  {
+    return 0.0f;
+  }
+
+  // Define minimum threshold for meaningful current reading (before calibration)
+  const float MIN_RAW_CURRENT_THRESHOLD = 0.001f; // 1mA minimum raw reading
+
+  // If raw current is below threshold, treat as zero (no load)
+  if (rawCurrent < MIN_RAW_CURRENT_THRESHOLD)
+  {
+    return 0.0f;
+  }
+
   float calibratedCurrent = rawCurrent * currentCalibrationFactor;
 
   // Apply basic validation - negative current doesn't make sense
@@ -200,6 +220,34 @@ float getValidatedCurrent()
 }
 
 /**
+ * @brief Get validated and calibrated voltage reading from HLW8012
+ *
+ * @return float Validated and calibrated voltage reading in volts
+ */
+float getValidatedVoltage()
+{
+  float rawVoltage = hlw.getVoltage();
+  float calibratedVoltage = rawVoltage * voltageCalibrationFactor;
+
+  // Apply basic validation - negative voltage doesn't make sense
+  if (calibratedVoltage < 0.0f)
+  {
+    return 0.0f;
+  }
+
+  // Cap at reasonable maximum (300V for safety)
+  const float MAX_REASONABLE_VOLTAGE = 300.0f;
+  if (calibratedVoltage > MAX_REASONABLE_VOLTAGE)
+  {
+    Serial.printf("WARNING: Detected excessive voltage reading: %.1fV - capping at %.1fV\n",
+                  calibratedVoltage, MAX_REASONABLE_VOLTAGE);
+    return MAX_REASONABLE_VOLTAGE;
+  }
+
+  return calibratedVoltage;
+}
+
+/**
  * @brief Get validated power reading from HLW8012
  *
  * The HLW8012 chip can return spurious power readings (like 43,488W) when
@@ -214,8 +262,28 @@ float getValidatedPower()
   float rawPower = hlw.getActivePower();
 
   // Define thresholds for validation
-  const float MIN_CURRENT_THRESHOLD = 0.05f;  // 50mA minimum for valid power reading
+  const float MIN_CURRENT_THRESHOLD = 0.001f; // 1mA minimum for valid power reading (same as current validation)
   const float MAX_REASONABLE_POWER = 2000.0f; // 2000W maximum reasonable power for this device
+
+  // Debug output every 10 seconds
+  static unsigned long lastDebug = 0;
+  if (millis() - lastDebug > 10000)
+  {
+    float voltage = getValidatedVoltage(); // Use calibrated voltage
+    float apparentPower = voltage * current;
+    float powerFactor = (apparentPower > 0.1f) ? (rawPower / apparentPower) : 0.0f;
+    Serial.printf("POWER DEBUG: Current=%.3fA, RawPower=%.1fW, Voltage=%.1fV, ApparentPower=%.1fW, PowerFactor=%.2f, MinThreshold=%.3fA\n",
+                  current, rawPower, voltage, apparentPower, powerFactor, MIN_CURRENT_THRESHOLD);
+
+    // Additional debugging for power accuracy
+    if (current > 0.1f) // Only show when there's significant current
+    {
+      Serial.printf("POWER ANALYSIS: Expected~%.1fW (if resistive), Actual=%.1fW, Difference=%.1fW (%.1f%%)\n",
+                    apparentPower, rawPower, rawPower - apparentPower,
+                    ((rawPower - apparentPower) / apparentPower) * 100.0f);
+    }
+    lastDebug = millis();
+  }
 
   // If current is below threshold, power should be zero or very small
   if (current < MIN_CURRENT_THRESHOLD)
@@ -231,18 +299,28 @@ float getValidatedPower()
   }
 
   // Basic power factor validation (power shouldn't exceed voltage * current significantly)
-  float voltage = hlw.getVoltage() * voltageCalibrationFactor;
+  float voltage = getValidatedVoltage(); // Use calibrated voltage
   float apparentPower = voltage * current;
 
   // If power is significantly higher than apparent power, it's likely spurious
-  if (rawPower > (apparentPower * 1.2f)) // Allow for some power factor variation
+  // Increased tolerance from 1.2 to 2.0 to account for measurement variations and reactive loads
+  if (rawPower > (apparentPower * 2.0f))
   {
-    Serial.printf("WARNING: Power reading %.1fW exceeds apparent power %.1fW (V=%.1f, I=%.3f) - setting to 0W\n",
-                  rawPower, apparentPower, voltage, current);
+    Serial.printf("WARNING: Power reading %.1fW exceeds apparent power %.1fW * 2.0 = %.1fW (V=%.1f, I=%.3f) - setting to 0W\n",
+                  rawPower, apparentPower, apparentPower * 2.0f, voltage, current);
     return 0.0f;
   }
 
-  return rawPower;
+  // Debug output when power is valid
+  if (millis() - lastDebug > 9000) // Show slightly before regular debug
+  {
+    float calibratedPower = rawPower * powerCalibrationFactor;
+    Serial.printf("POWER VALID: Raw=%.1fW, Calibrated=%.1fW (factor=%.3f), V=%.1f, I=%.3f, Apparent=%.1fW, Factor=%.2f\n",
+                  rawPower, calibratedPower, powerCalibrationFactor, voltage, current, apparentPower, rawPower / apparentPower);
+  }
+
+  // Apply power calibration factor
+  return rawPower * powerCalibrationFactor;
 }
 
 // Helper function to get CI-V address as byte value
@@ -266,6 +344,9 @@ uint32_t getTotalHeap();
 uint32_t getSketchSize();
 uint32_t getFreeSketchSpace();
 float readInternalTemperature();
+float getValidatedVoltage();
+float getValidatedCurrent();
+float getValidatedPower();
 
 String loadFile(const char *path);
 String processTemplate(String tmpl);
@@ -458,10 +539,14 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
     sendDebugMessage("=== END REBOOT BANNER ===");
 
     // Update sensor data in DeviceState before sending responses
-    float lux = analogRead(PIN_LUX_ADC) * (3.3f / 4095.0f);
+    // Use independent lux reading - no interference with power measurements
+    float lux = HardwareController::readLuxSensor();
+
+    // Debug for websocket connect lux reading
+    Serial.printf("WS CONNECT LUX DEBUG: Independent Lux=%.3f\n", lux);
+
     float amps = getValidatedCurrent();
-    float rawV = hlw.getVoltage();
-    float volts = rawV * voltageCalibrationFactor;
+    float volts = getValidatedVoltage();
     float watts = getValidatedPower();
     DeviceState::updateSensorData(lux, volts, amps, watts);
 
@@ -505,15 +590,35 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
           // Apply and persist new output state
           if (strcmp(cmd, "output1") == 0)
           {
+            // Debug lux before relay change
+            uint16_t luxBefore = analogRead(PIN_LUX_ADC);
+
             relay1State = value;
             hardware.setRelay(1, relay1State);
             deviceState.setRelayState(relay1State, relay2State);
+
+            // Debug lux after relay change
+            delay(10); // Small delay to let circuit settle
+            uint16_t luxAfter = analogRead(PIN_LUX_ADC);
+            Serial.printf("RELAY1 CHANGE: %s -> %s, Lux Before=%d, After=%d (Change=%d)\n",
+                          relay1State ? "OFF" : "ON", relay1State ? "ON" : "OFF",
+                          luxBefore, luxAfter, (int)luxAfter - (int)luxBefore);
           }
           else if (strcmp(cmd, "output2") == 0)
           {
+            // Debug lux before relay change
+            uint16_t luxBefore = analogRead(PIN_LUX_ADC);
+
             relay2State = value;
             hardware.setRelay(2, relay2State);
             deviceState.setRelayState(relay1State, relay2State);
+
+            // Debug lux after relay change
+            delay(10); // Small delay to let circuit settle
+            uint16_t luxAfter = analogRead(PIN_LUX_ADC);
+            Serial.printf("RELAY2 CHANGE: %s -> %s, Lux Before=%d, After=%d (Change=%d)\n",
+                          relay2State ? "OFF" : "ON", relay2State ? "ON" : "OFF",
+                          luxBefore, luxAfter, (int)luxAfter - (int)luxBefore);
           }
 
           // Immediately broadcast updated status
@@ -522,10 +627,17 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
             String uptimeStr = getUptime();
 
             // Sensor readings
-            float lux = analogRead(PIN_LUX_ADC) * (3.3f / 4095.0f);
+            uint16_t luxRaw = analogRead(PIN_LUX_ADC);
+            float lux = luxRaw * (3.3f / 4095.0f);
+
+            // Debug for outlet control lux reading
+            Serial.printf("OUTLET CONTROL LUX DEBUG: Raw ADC=%d, Lux=%.3f, Relay1=%s, Relay2=%s\n",
+                          luxRaw, lux,
+                          relay1State ? "ON" : "OFF",
+                          relay2State ? "ON" : "OFF");
+
             float amps = getValidatedCurrent();
-            float rawV = hlw.getVoltage();
-            float volts = rawV * voltageCalibrationFactor;
+            float volts = getValidatedVoltage();
             float watts = getValidatedPower();
 
             // Update sensor data and send status response
@@ -868,6 +980,82 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
           break;
         }
 
+        // Handle power calibration commands
+        if (j.containsKey("command") && strcmp(j["command"] | "", "calibratePower") == 0)
+        {
+          float expectedPower = j["expectedPower"] | 0.0f;
+          if (expectedPower > 0.0f && expectedPower <= 2000.0f) // Reasonable power range
+          {
+            float rawPower = hlw.getActivePower(); // Get uncalibrated reading
+            if (rawPower > 0.0f)
+            {
+              float newCalibrationFactor = expectedPower / rawPower;
+              powerCalibrationFactor = newCalibrationFactor;
+              powerCalibrated = true;
+
+              // Save calibration to preferences
+              preferences.begin("calibration", false);
+              preferences.putFloat("powerFactor", powerCalibrationFactor);
+              preferences.putBool("powerCalibrated", powerCalibrated);
+              preferences.end();
+
+              client->text(JsonBuilder::buildInfoResponse("Power calibrated: factor=" + String(powerCalibrationFactor, 4) +
+                                                          " (raw=" + String(rawPower, 1) + "W, expected=" + String(expectedPower, 1) + "W)"));
+              sendDebugMessage("Power calibration set: factor=" + String(powerCalibrationFactor, 4) +
+                               " raw=" + String(rawPower, 1) + "W -> " + String(expectedPower, 1) + "W");
+            }
+            else
+            {
+              client->text(JsonBuilder::buildErrorResponse("Cannot calibrate: no power reading available"));
+              sendDebugMessage("Power calibration failed: raw power reading is 0");
+            }
+          }
+          else
+          {
+            client->text(JsonBuilder::buildErrorResponse("Invalid expected power. Must be 1-2000W."));
+            sendDebugMessage("Invalid power calibration value: " + String(expectedPower));
+          }
+          break;
+        }
+
+        // Handle reset power calibration
+        if (j.containsKey("command") && strcmp(j["command"] | "", "resetPowerCalibration") == 0)
+        {
+          powerCalibrationFactor = 1.0f;
+          powerCalibrated = false;
+
+          // Clear calibration from preferences
+          preferences.begin("calibration", false);
+          preferences.remove("powerFactor");
+          preferences.remove("powerCalibrated");
+          preferences.end();
+
+          client->text(JsonBuilder::buildInfoResponse("Power calibration reset to default (factor=1.0)"));
+          sendDebugMessage("Power calibration reset to default");
+          break;
+        }
+
+        // Handle get power calibration info
+        if (j.containsKey("command") && strcmp(j["command"] | "", "getPowerCalibration") == 0)
+        {
+          float rawPower = hlw.getActivePower();
+          float calibratedPower = rawPower * powerCalibrationFactor;
+
+          String response = "{\"type\":\"powerCalibration\","
+                            "\"calibrationFactor\":" +
+                            String(powerCalibrationFactor, 4) + ","
+                                                                "\"calibrated\":" +
+                            String(powerCalibrated ? "true" : "false") + ","
+                                                                         "\"rawPower\":" +
+                            String(rawPower, 2) + ","
+                                                  "\"calibratedPower\":" +
+                            String(calibratedPower, 2) + "}";
+          client->text(response);
+          sendDebugMessage("Power calibration info sent: factor=" + String(powerCalibrationFactor, 4) +
+                           " raw=" + String(rawPower, 1) + "W cal=" + String(calibratedPower, 1) + "W");
+          break;
+        }
+
         // Handle ping/pong for connection testing
         if (j.containsKey("type"))
         {
@@ -908,9 +1096,14 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
 // JSON Data Handler (consolidated for /index/data)
 void handleDataJson(AsyncWebServerRequest *request)
 {
-  float lux = analogRead(PIN_LUX_ADC) * (3.3f / 4095.0f);
+  // Use independent lux reading - no interference with power measurements
+  float lux = HardwareController::readLuxSensor();
+
+  // Debug for web interface lux reading
+  Serial.printf("WEB LUX DEBUG: Independent Lux=%.3f\n", lux);
+
   float amps = getValidatedCurrent();
-  float volts = hlw.getVoltage();
+  float volts = getValidatedVoltage(); // Use calibrated voltage
   float watts = getValidatedPower();
   String json = String("{\"lux\":") + String(lux, 1) + ",\"amps\":" + String(amps, 2) + ",\"volts\":" + String(volts, 1) + ",\"watts\":" + String(watts, 0) + "}";
   request->send(200, "application/json", json);
@@ -1072,8 +1265,10 @@ void setup()
   // Initialize LED timer for captive portal blinking
   initLedTimer();
 
-  // Configure LUX ADC pin as input
+  // Configure LUX ADC pin as input with explicit no pull-up/pull-down
   pinMode(PIN_LUX_ADC, INPUT);
+  gpio_pullup_dis((gpio_num_t)PIN_LUX_ADC);   // Explicitly disable pull-up
+  gpio_pulldown_dis((gpio_num_t)PIN_LUX_ADC); // Explicitly disable pull-down
 
   // Set ADC resolution to 12-bit (0-4095 range)
   analogSetAttenuation(ADC_11db);                 // Global attenuation setting
@@ -1121,6 +1316,10 @@ void setup()
   // Load our current calibration factor
   currentCalibrationFactor = preferences.getFloat("currentFactor", 1.0f);
   currentCalibrated = preferences.getBool("currentCalibrated", false);
+
+  // Load our power calibration factor
+  powerCalibrationFactor = preferences.getFloat("powerFactor", 1.0f);
+  powerCalibrated = preferences.getBool("powerCalibrated", false);
   preferences.end();
 
   if (storedCurrentMultiplier > 0 && storedVoltageMultiplier > 0 && storedPowerMultiplier > 0)
@@ -1147,6 +1346,15 @@ void setup()
   else
   {
     Serial.println("No current calibration found - using default factor: " + String(currentCalibrationFactor, 4));
+  }
+
+  if (powerCalibrated)
+  {
+    Serial.println("Loaded power calibration factor: " + String(powerCalibrationFactor, 4));
+  }
+  else
+  {
+    Serial.println("No power calibration found - using default factor: " + String(powerCalibrationFactor, 4));
   }
 
   // Enable HLW8012 pulse interrupts for CF and CF1
@@ -1634,22 +1842,38 @@ void loop()
   // Periodic sensor reading and status broadcast
   static unsigned long lastSensorRead = 0;
   static unsigned long lastStatusBroadcast = 0;
+  static unsigned long lastLuxRead = 0;
+  static float lastLuxValue = 0.0f;
 
+  // Independent lux sensor reading - polls frequently and independently of power measurements
+  const unsigned long LUX_UPDATE_INTERVAL_MS = 1000; // Read lux every 1 second, independent of power
+  if (currentTime - lastLuxRead >= LUX_UPDATE_INTERVAL_MS)
+  {
+    lastLuxRead = currentTime;
+    lastLuxValue = HardwareController::readLuxSensor();
+
+    // Debug lux sensor reading every 10 seconds
+    static unsigned long lastLuxDebug = 0;
+    if (millis() - lastLuxDebug > 10000)
+    {
+      Serial.printf("LUX INDEPENDENT DEBUG: Lux=%.3fV, Relay1=%s, Relay2=%s\n",
+                    lastLuxValue, relay1State ? "ON" : "OFF", relay2State ? "ON" : "OFF");
+      lastLuxDebug = millis();
+    }
+  }
+
+  // Power sensor reading - completely separate from lux
   if (currentTime - lastSensorRead >= SENSOR_UPDATE_INTERVAL_MS)
   {
     lastSensorRead = currentTime;
 
-    // Read sensors and broadcast status
-    float voltage = hlw.getVoltage();
+    // Read power sensors only (no lux interference)
+    float voltage = getValidatedVoltage(); // Use calibrated voltage
     float current = getValidatedCurrent();
     float power = getValidatedPower();
 
-    // Read light sensor (LUX) - convert ADC reading to voltage
-    uint16_t luxRaw = analogRead(PIN_LUX_ADC);
-    float luxVoltage = (luxRaw / 4095.0) * 3.3; // Convert to voltage (0-3.3V)
-
-    // Convert to lux value
-    float lux = luxVoltage * (1000.0 / 3.3); // Simple conversion, adjust as needed
+    // Use the independently-read lux value from above
+    float lux = lastLuxValue;
 
     // Get current time
     struct tm timeinfo;
@@ -1863,3 +2087,7 @@ String processTemplate(String tmpl)
 
   return tmpl;
 }
+
+// -------------------------------------------------------------------------
+// Advanced Lux Sensor Debugging Functions
+// -------------------------------------------------------------------------
