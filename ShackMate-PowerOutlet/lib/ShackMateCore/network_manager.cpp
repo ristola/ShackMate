@@ -63,6 +63,52 @@ void NetworkManager::sendToServer(const String &message)
 {
     if (wsClientConnected)
     {
+        // Enhanced debug for CI-V messages being sent
+        if (message.length() >= 12 && message.indexOf("FE") != -1)
+        {
+            // Analyze what type of CI-V response we're sending
+            if (message.indexOf("19 00") != -1)
+            {
+                LOG_INFO(">>> TRANSMITTING CI-V: Echo Response (19 00) - " + message);
+                LOG_INFO("    Confirming our CI-V address (B3) to remote server");
+            }
+            else if (message.indexOf("19 01") != -1)
+            {
+                LOG_INFO(">>> TRANSMITTING CI-V: Model ID Response (19 01) - " + message);
+                LOG_INFO("    Sending our IP address in hex format");
+            }
+            else if (message.indexOf(" 34 ") != -1)
+            {
+                // Extract model type from message for better debugging
+                String modelType = "??";
+                if (message.indexOf(" 34 00 ") != -1)
+                {
+                    modelType = "00 (ATOM Power Outlet)";
+                }
+                else if (message.indexOf(" 34 01 ") != -1)
+                {
+                    modelType = "01 (Wyze Outdoor Power Outlet)";
+                }
+                LOG_INFO(">>> TRANSMITTING CI-V: Model Response (34 " + modelType + ") - " + message);
+            }
+            else if (message.indexOf(" 35 ") != -1)
+            {
+                LOG_INFO(">>> TRANSMITTING CI-V: Outlet Status Response (35) - " + message);
+            }
+            else if (message.indexOf(" FA ") != -1)
+            {
+                LOG_INFO(">>> TRANSMITTING CI-V: NAK Response (FA) - Invalid command - " + message);
+            }
+            else
+            {
+                LOG_INFO(">>> TRANSMITTING CI-V: " + message + " -> " + connectedServerIP + ":" + String(connectedServerPort));
+            }
+        }
+        else
+        {
+            LOG_DEBUG("Sending message to server: " + message);
+        }
+
         String msgCopy = message; // WebSocketsClient needs non-const reference
         wsClient.sendTXT(msgCopy);
         lastWebSocketActivity = millis();
@@ -70,6 +116,10 @@ void NetworkManager::sendToServer(const String &message)
     else
     {
         LOG_WARNING("Cannot send message - WebSocket client not connected");
+        if (message.length() >= 12 && message.indexOf("FE") != -1)
+        {
+            LOG_ERROR("FAILED TO TRANSMIT CI-V: " + message + " (WebSocket disconnected)");
+        }
     }
 }
 
@@ -201,9 +251,56 @@ void NetworkManager::onWebSocketClientEvent(WStype_t type, uint8_t *payload, siz
             String message = String((char *)payload);
             LOG_DEBUG("WebSocket client received: " + message);
 
+            // Enhanced CI-V debug logging for specific commands
+            if (message.length() >= 12 && message.indexOf("FE") != -1)
+            {
+                // Check for CI-V commands we're interested in
+                if (message.indexOf("19 00") != -1)
+                {
+                    LOG_INFO(">>> CI-V INCOMING: Echo Request (19 00) - Should respond with our CI-V address (B3)");
+                    LOG_INFO("    Raw message: " + message);
+                }
+                else if (message.indexOf("19 01") != -1)
+                {
+                    // Get current IP for debug display
+                    IPAddress currentIP = WiFi.localIP();
+                    String ipHex = String(currentIP[0], HEX) + " " + String(currentIP[1], HEX) + " " +
+                                   String(currentIP[2], HEX) + " " + String(currentIP[3], HEX);
+                    ipHex.toUpperCase();
+                    LOG_INFO(">>> CI-V INCOMING: Model ID Request (19 01) - Should respond with IP in hex: " + ipHex);
+                    LOG_INFO("    Current IP: " + currentIP.toString() + " -> Hex: " + ipHex);
+                    LOG_INFO("    Raw message: " + message);
+                }
+                else if (message.indexOf(" 34 ") != -1)
+                {
+                    LOG_INFO(">>> CI-V INCOMING: Read Model Request (34) - Should respond with device model");
+                    LOG_INFO("    Model Types: 00=ATOM Power Outlet, 01=Wyze Outdoor Power Outlet");
+                    LOG_INFO("    Raw message: " + message);
+                }
+                else if (message.indexOf(" 35 ") != -1 || message.indexOf(" 35") == message.length() - 3)
+                {
+                    LOG_INFO(">>> CI-V INCOMING: Outlet Status Request/Set (35) - Outlet control command");
+                    LOG_INFO("    Raw message: " + message);
+                }
+                else if (message.indexOf("FE FE B3") != -1)
+                {
+                    LOG_INFO(">>> CI-V INCOMING: Direct message to our CI-V address (B3)");
+                    LOG_INFO("    Raw message: " + message);
+                }
+                else if (message.indexOf("FE FE 00") != -1)
+                {
+                    LOG_INFO(">>> CI-V INCOMING: Broadcast message (00) - We should respond");
+                    LOG_INFO("    Raw message: " + message);
+                }
+                else
+                {
+                    LOG_DEBUG("CI-V message (other): " + message);
+                }
+            }
+
             // Forward message to main application for processing
-            // This will be handled by the CI-V message processor in main.cpp
-            // TODO: Consider creating a message dispatcher module
+            extern void handleReceivedCivMessage(const String &message);
+            handleReceivedCivMessage(message);
             break;
         }
 

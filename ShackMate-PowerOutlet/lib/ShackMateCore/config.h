@@ -52,3 +52,8 @@ static constexpr size_t MAX_CIV_MESSAGE_LENGTH = 128;
 #define DEFAULT_DEVICE_ID 1
 #define DEFAULT_CIV_ADDRESS "B0"
 #define DEFAULT_DEVICE_NAME "ShackMate PowerOutlet"
+
+// CI-V Model Type Constants
+#define CIV_MODEL_ATOM_POWER_OUTLET 0x00   // 00 = ATOM Power Outlet
+#define CIV_MODEL_WYZE_OUTDOOR_OUTLET 0x01 // 01 = Wyze Outdoor Power Outlet
+#define DEFAULT_CIV_MODEL_TYPE CIV_MODEL_WYZE_OUTDOOR_OUTLET

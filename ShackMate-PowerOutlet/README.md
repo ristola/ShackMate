@@ -2,6 +2,39 @@
 
 A smart power outlet controller designed for ham radio operators and electronics enthusiasts, featuring CI-V integration, WebSocket control, and comprehensive power monitoring.
 
+## Recent Improvements (2025)
+
+### Major Architecture Refactoring
+
+The firmware has undergone significant improvements to enhance reliability, maintainability, and protocol compliance:
+
+#### CI-V Protocol Enhancements
+- **Echo Loop Prevention**: Prevents infinite response loops in multi-device networks
+- **Broadcast Deduplication**: Eliminates duplicate responses within 1-second windows
+- **Protocol Compliance**: Full validation of CI-V message formats with comprehensive error handling
+- **Smart Message Routing**: CI-V responses only sent via remote WebSocket clients, not web UI
+
+#### Network Reliability Improvements
+
+- **Robust WebSocket Handling**: Enhanced connection management with automatic reconnection
+- **Message Deduplication**: Prevents processing duplicate broadcasts from multiple network paths
+- **Network Topology Awareness**: Intelligent handling of complex multi-device setups
+- **Debug Transparency**: Comprehensive logging of all CI-V and network activity
+
+#### Power Monitoring Enhancements
+
+- **Calibrated Measurements**: Hardware-specific calibration for voltage and current sensors
+- **Real-time Validation**: Advanced filtering of spurious power readings
+- **Immediate Calibration Application**: All calibration changes apply instantly without restart
+- **Persistent Storage**: Calibration factors saved to non-volatile memory
+
+#### Code Quality and Maintainability
+
+- **Modular Architecture**: Clean separation of concerns across dedicated libraries
+- **Comprehensive Testing**: Extensive build and integration testing
+- **Documentation**: Detailed inline documentation and protocol specifications
+- **Production Ready**: Robust error handling and graceful degradation
+
 ## Overview
 
 The ShackMate Power Outlet is an ESP32-based smart outlet controller built for the Wyze Outdoor Outlet Model WLPPO1. It provides remote control capabilities through multiple interfaces including CI-V protocol integration for ham radio equipment, WebSocket-based web interface, and comprehensive power monitoring with HLW8012 sensors.
@@ -42,11 +75,11 @@ The project uses a modular architecture with the following key components:
 - **HardwareController**: Hardware abstraction layer for relays, LEDs, and buttons
 - **JsonBuilder**: JSON response builders for WebSocket communication
 - **NetworkManager**: Unified networking management (WebSocket server/client, UDP discovery)
+- **CivHandler**: Dedicated CI-V protocol implementation with echo loop prevention and broadcast deduplication
 - **Config**: Central configuration management
 
 ### External Libraries
 
-- **SMCIV**: CI-V protocol implementation for ham radio integration
 - **ESPAsyncWebServer**: Asynchronous web server
 - **ArduinoJson**: JSON parsing and generation
 - **WiFiManager**: Captive portal for WiFi configuration
@@ -72,13 +105,25 @@ The project uses a modular architecture with the following key components:
 
 ### 2. CI-V Protocol Support
 
-The device implements full CI-V protocol support for ham radio equipment:
+The device implements full CI-V protocol support for ham radio equipment with robust echo loop prevention and broadcast deduplication:
+
+**Supported Commands:**
 
 - **Echo Request (19 00)**: Returns device CI-V address
 - **Model ID Request (19 01)**: Returns device IP address in hex format
 - **Read Model (34)**: Returns device model type
+  - `00` = ATOM Power Outlet
+  - `01` = Wyze Outdoor Power Outlet
 - **Read Outlet Status (35)**: Returns current outlet state (00-03)
 - **Set Outlet Status (35 XX)**: Sets outlet state with immediate response
+
+**Advanced Features:**
+
+- **Echo Loop Prevention**: Automatically ignores messages originating from this device to prevent infinite response loops
+- **Broadcast Deduplication**: Prevents multiple responses to the same broadcast within a 1-second window
+- **Network Topology Awareness**: Handles multi-device networks with proper message routing
+- **Robust Protocol Parsing**: Validates all CI-V message formats with comprehensive error handling
+- **Debug Logging**: Detailed logging of all CI-V requests, responses, and protocol decisions
 
 #### CI-V Address Mapping
 
@@ -219,8 +264,9 @@ The system automatically validates power readings to prevent anomalies and uses 
 #### WebSocket Client
 
 - Connects to other ShackMate devices
-- CI-V message forwarding
-- Automatic reconnection
+- **CI-V message routing**: All CI-V responses are sent only via remote WebSocket clients (not web UI)
+- **Echo loop prevention**: Intelligent filtering of duplicate or self-originated messages
+- Automatic reconnection with exponential backoff
 - Network topology discovery
 
 #### HTTP Server (Port 80)
@@ -337,8 +383,8 @@ pio device monitor
 │   │   ├── device_state.h/.cpp   # State management
 │   │   ├── hardware_controller.h/.cpp  # Hardware abstraction
 │   │   ├── json_builder.h/.cpp   # JSON response builders
-│   │   └── network_manager.h/.cpp    # Network management
-│   └── SMCIV/                # CI-V protocol library
+│   │   ├── network_manager.h/.cpp    # Network management
+│   │   └── civ_handler.h/.cpp    # CI-V protocol implementation
 ├── data/
 │   └── index.html            # Web interface
 ├── include/                  # Additional headers
