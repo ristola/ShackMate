@@ -1,0 +1,37 @@
+{
+  "name": "ShackMateCore",
+  "version": "1.0.0",
+  "description": "Core library for ShackMate devices - provides logging, device state management, hardware control, JSON building, and network management",
+  "keywords": ["esp32", "iot", "ham radio", "ci-v"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShackMate/ShackMate-PowerOutlet.git"
+  },
+  "authors": [
+    {
+      "name": "ShackMate Project",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"],
+  "dependencies": [
+    {
+      "name": "ESPAsyncWebServer",
+      "version": "^1.2.3"
+    },
+    {
+      "name": "ArduinoJson",
+      "version": "^6.21.0"
+    },
+    {
+      "name": "WebSocketsClient",
+      "version": "^2.3.6"
+    }
+  ],
+  "build": {
+    "includeDir": ".",
+    "srcDir": "."
+  }
+}

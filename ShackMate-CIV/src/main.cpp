@@ -85,7 +85,8 @@ Serial 2   GPIO39, GPIO38  User / Free   Yes (I2C pins)
 #include <ESPAsyncWebServer.h>
 #include "esp_task_wdt.h"
 #include <deque>
-struct MsgCacheEntry {
+struct MsgCacheEntry
+{
   String hex;
   unsigned long timestamp;
 };
@@ -93,20 +94,26 @@ std::deque<MsgCacheEntry> msgCache;
 const unsigned long CACHE_WINDOW_MS = 1000;
 const int CACHE_MAX_SIZE = 32;
 
-bool isDuplicateMessage(const String& hex) {
+bool isDuplicateMessage(const String &hex)
+{
   unsigned long now = millis();
   // Purge old entries
-  while (!msgCache.empty() && now - msgCache.front().timestamp > CACHE_WINDOW_MS) {
+  while (!msgCache.empty() && now - msgCache.front().timestamp > CACHE_WINDOW_MS)
+  {
     msgCache.pop_front();
   }
-  for (const auto& entry : msgCache) {
-    if (entry.hex == hex) return true;
+  for (const auto &entry : msgCache)
+  {
+    if (entry.hex == hex)
+      return true;
   }
   return false;
 }
 
-void addMessageToCache(const String& hex) {
-  if ((int)msgCache.size() >= CACHE_MAX_SIZE) msgCache.pop_front();
+void addMessageToCache(const String &hex)
+{
+  if ((int)msgCache.size() >= CACHE_MAX_SIZE)
+    msgCache.pop_front();
   msgCache.push_back({hex, millis()});
 }
 // HTTP/WebSocket server (browser dashboard) on port 80
@@ -483,12 +490,16 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
 // -------------------------------------------------------------------------
 
 // Validate CI-V frame (must be at least FE FE XX XX XX FD)
-bool isValidCivFrame(const char *buf, size_t len) {
+bool isValidCivFrame(const char *buf, size_t len)
+{
   // Must be at least FE FE XX XX XX FD (min 5 bytes)
-  if (len < 5) return false;
+  if (len < 5)
+    return false;
   // Must start with FE FE and end with FD
-  if ((uint8_t)buf[0] != 0xFE || (uint8_t)buf[1] != 0xFE) return false;
-  if ((uint8_t)buf[len - 1] != 0xFD) return false;
+  if ((uint8_t)buf[0] != 0xFE || (uint8_t)buf[1] != 0xFE)
+    return false;
+  if ((uint8_t)buf[len - 1] != 0xFD)
+    return false;
   return true;
 }
 
@@ -538,10 +549,12 @@ void myTaskDebug(void *parameter)
           // On every frame, increment frames counter
           stat_serial1_frames++;
           // Validate CI-V frame before forwarding
-          if (isValidCivFrame(serial1Buf, serial1Len)) {
+          if (isValidCivFrame(serial1Buf, serial1Len))
+          {
             stat_serial1_valid++;
             String hex;
-            for (size_t i = 0; i < serial1Len; ++i) {
+            for (size_t i = 0; i < serial1Len; ++i)
+            {
               char b[4];
               sprintf(b, "%02X ", (uint8_t)serial1Buf[i]);
               hex += b;
@@ -549,41 +562,36 @@ void myTaskDebug(void *parameter)
             hex.trim();
 
             // Forward to WebSocket client (NO Serial debug print)
-            if (webClient.isConnected()) {
-              if (!isDuplicateMessage(hex)) {
+            if (webClient.isConnected())
+            {
+              if (!isDuplicateMessage(hex))
+              {
                 webClient.sendTXT(hex);
                 stat_ws_tx++;
                 broadcastStatus();
                 addMessageToCache(hex);
-              } else {
+              }
+              else
+              {
                 stat_ws_dup++;
                 broadcastStatus();
               }
             }
-          } else {
+          }
+          else
+          {
             stat_serial1_invalid++;
-            // Log invalid frame to WebSocket as JSON
-            if (webClient.isConnected()) {
-              String logMsg = "{\"event\":\"civ_frame_invalid\",\"src\":\"serial1\",\"hex\":\"";
-              for (size_t i = 0; i < serial1Len; ++i) {
-                char b[4];
-                sprintf(b, "%02X ", (uint8_t)serial1Buf[i]);
-                logMsg += b;
-              }
-              logMsg.trim();
-              logMsg += "\"}";
-              webClient.sendTXT(logMsg);
-              stat_ws_tx++;
-              broadcastStatus();
-            }
+            broadcastStatus();
           }
 
           // --- BEGIN: Automatic reply to CI-V broadcast addressed to 00 ---
-          if (serial1Len >= 6) { // At least FE FE 00 XX XX FD
+          if (serial1Len >= 6)
+          { // At least FE FE 00 XX XX FD
             uint8_t toAddr = (uint8_t)serial1Buf[2];
             uint8_t fromAddr = (uint8_t)serial1Buf[3];
             // If the message is a broadcast (toAddr == 0x00) and not sent from us, respond as our device
-            if (toAddr == 0x00 && fromAddr != CIV_ADDRESS) {
+            if (toAddr == 0x00 && fromAddr != CIV_ADDRESS)
+            {
               stat_serial1_broadcast++;
               uint8_t cmd = (uint8_t)serial1Buf[4];
               uint8_t param = (serial1Len > 5) ? (uint8_t)serial1Buf[5] : 0x00;
@@ -593,17 +601,21 @@ void myTaskDebug(void *parameter)
               size_t replyLen = 5;
 
               // Echo subcommand if present
-              if ((cmd == 0x19) && (serial1Len > 5)) {
+              if ((cmd == 0x19) && (serial1Len > 5))
+              {
                 reply[replyLen++] = param;
 
                 // For command 19 01, append IP address as 4 bytes
-                if (param == 0x01) {
+                if (param == 0x01)
+                {
                   IPAddress ip = WiFi.localIP();
                   reply[replyLen++] = ip[0];
                   reply[replyLen++] = ip[1];
                   reply[replyLen++] = ip[2];
                   reply[replyLen++] = ip[3];
-                } else if (param == 0x00) {
+                }
+                else if (param == 0x00)
+                {
                   // For 19 00, append our CI-V address
                   reply[replyLen++] = CIV_ADDRESS;
                 }
@@ -613,17 +625,6 @@ void myTaskDebug(void *parameter)
 
               Serial1.write(reply, replyLen); // Use Serial1 for reply
               Serial1.flush();
-
-              // --- WebSocket JSON log for broadcast reply ---
-              if (webClient.isConnected()) {
-                  String logMsg = "{\"event\":\"civ_broadcast_reply\",\"from\":\"0x00\",\"to\":\"0x";
-                  logMsg += String(CIV_ADDRESS, HEX);
-                  logMsg += "\",\"cmd\":\"19 01\",\"ip\":\"";
-                  logMsg += WiFi.localIP().toString();
-                  logMsg += "\"}";
-                  webClient.sendTXT(logMsg);
-                  stat_ws_tx++;
-              }
             }
           }
           // --- END: Automatic reply to CI-V broadcast addressed to 00 ---
@@ -673,10 +674,12 @@ void myTaskDebug(void *parameter)
           // On every frame, increment frames counter
           stat_serial2_frames++;
           // Validate CI-V frame before forwarding
-          if (isValidCivFrame(serial2Buf, serial2Len)) {
+          if (isValidCivFrame(serial2Buf, serial2Len))
+          {
             stat_serial2_valid++;
             String hex;
-            for (size_t i = 0; i < serial2Len; ++i) {
+            for (size_t i = 0; i < serial2Len; ++i)
+            {
               char b[4];
               sprintf(b, "%02X ", (uint8_t)serial2Buf[i]);
               hex += b;
@@ -684,41 +687,36 @@ void myTaskDebug(void *parameter)
             hex.trim();
 
             // Forward to WebSocket client (NO Serial debug print)
-            if (webClient.isConnected()) {
-              if (!isDuplicateMessage(hex)) {
+            if (webClient.isConnected())
+            {
+              if (!isDuplicateMessage(hex))
+              {
                 webClient.sendTXT(hex);
                 stat_ws_tx++;
                 broadcastStatus();
                 addMessageToCache(hex);
-              } else {
+              }
+              else
+              {
                 stat_ws_dup++;
                 broadcastStatus();
               }
             }
-          } else {
+          }
+          else
+          {
             stat_serial2_invalid++;
-            // Log invalid frame to WebSocket as JSON
-            if (webClient.isConnected()) {
-              String logMsg = "{\"event\":\"civ_frame_invalid\",\"src\":\"serial2\",\"hex\":\"";
-              for (size_t i = 0; i < serial2Len; ++i) {
-                char b[4];
-                sprintf(b, "%02X ", (uint8_t)serial2Buf[i]);
-                logMsg += b;
-              }
-              logMsg.trim();
-              logMsg += "\"}";
-              webClient.sendTXT(logMsg);
-              stat_ws_tx++;
-              broadcastStatus();
-            }
+            broadcastStatus();
           }
 
           // --- BEGIN: Automatic reply to CI-V broadcast addressed to 00 ---
-          if (serial2Len >= 6) { // At least FE FE 00 XX XX FD
+          if (serial2Len >= 6)
+          { // At least FE FE 00 XX XX FD
             uint8_t toAddr = (uint8_t)serial2Buf[2];
             uint8_t fromAddr = (uint8_t)serial2Buf[3];
             // If the message is a broadcast (toAddr == 0x00) and not sent from us, respond as our device
-            if (toAddr == 0x00 && fromAddr != CIV_ADDRESS) {
+            if (toAddr == 0x00 && fromAddr != CIV_ADDRESS)
+            {
               stat_serial2_broadcast++;
               uint8_t cmd = (uint8_t)serial2Buf[4];
               uint8_t param = (serial2Len > 5) ? (uint8_t)serial2Buf[5] : 0x00;
@@ -728,17 +726,21 @@ void myTaskDebug(void *parameter)
               size_t replyLen = 5;
 
               // Echo subcommand if present
-              if ((cmd == 0x19) && (serial2Len > 5)) {
+              if ((cmd == 0x19) && (serial2Len > 5))
+              {
                 reply[replyLen++] = param;
 
                 // For command 19 01, append IP address as 4 bytes
-                if (param == 0x01) {
+                if (param == 0x01)
+                {
                   IPAddress ip = WiFi.localIP();
                   reply[replyLen++] = ip[0];
                   reply[replyLen++] = ip[1];
                   reply[replyLen++] = ip[2];
                   reply[replyLen++] = ip[3];
-                } else if (param == 0x00) {
+                }
+                else if (param == 0x00)
+                {
                   // For 19 00, append our CI-V address
                   reply[replyLen++] = CIV_ADDRESS;
                 }
@@ -748,17 +750,6 @@ void myTaskDebug(void *parameter)
 
               Serial2.write(reply, replyLen); // Use Serial2 for reply
               Serial2.flush();
-
-              // --- WebSocket JSON log for broadcast reply ---
-              if (webClient.isConnected()) {
-                  String logMsg = "{\"event\":\"civ_broadcast_reply\",\"from\":\"0x00\",\"to\":\"0x";
-                  logMsg += String(CIV_ADDRESS, HEX);
-                  logMsg += "\",\"cmd\":\"19 01\",\"ip\":\"";
-                  logMsg += WiFi.localIP().toString();
-                  logMsg += "\"}";
-                  webClient.sendTXT(logMsg);
-                  stat_ws_tx++;
-              }
             }
           }
           // --- END: Automatic reply to CI-V broadcast addressed to 00 ---
@@ -1290,16 +1281,17 @@ void setup()
                 {
     String html = generateInfoPage();
     request->send(200, "text/html", html); });
-  httpServer.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request) {
-      request->send(204); // No Content
-  });
-  httpServer.on("/reset_stats", HTTP_POST, [](AsyncWebServerRequest *req) {
+  httpServer.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request)
+                {
+                  request->send(204); // No Content
+                });
+  httpServer.on("/reset_stats", HTTP_POST, [](AsyncWebServerRequest *req)
+                {
       stat_serial1_frames = stat_serial1_valid = stat_serial1_invalid = stat_serial1_broadcast = 0;
       stat_serial2_frames = stat_serial2_valid = stat_serial2_invalid = stat_serial2_broadcast = 0;
       stat_ws_rx = stat_ws_tx = stat_ws_dup = 0;
       req->send(200, "application/json", "{\"status\":\"ok\"}");
-      broadcastStatus();
-  });
+      broadcastStatus(); });
   httpServer.addHandler(&wsServer);
   httpServer.begin();
   DBG_PRINTLN("HTTP server started on port 80");

@@ -109,11 +109,24 @@
       color: #fff700;
       text-shadow: 0 0 8px #fff700aa;
     }
+    .device-name {
+      text-align: center;
+      font-size: 16px;
+      color: #aaa;
+      margin: -10px 0 20px 0;
+      cursor: pointer;
+      transition: color 0.2s;
+      text-decoration: underline;
+    }
+    .device-name:hover {
+      color: #fff;
+    }
   </style>
 </head>
 <body>
   <div class="panel">
-    <h1>ShackMate Outlet Control</h1>
+    <h1>ShackMate Power Outlet</h1>
+    <div class="device-name" id="device-name">ShackMate Outlet</div>
     <div class="control-item">
       <div class="label-wrap">
         <span>🔌</span>
@@ -151,7 +164,7 @@
       <span>LUX:</span>
       <span><span id="lux">--</span> lux</span>
     </div>
-    <div id="timestamp">Time: --</div>
+    <div id="timestamp">UpTime: --</div>
     
     <!-- Connection Status Section - Centered between icons -->
     <div style="position: relative; margin-top: 12px; margin-bottom: 40px;">
@@ -269,6 +282,7 @@
           r2.checked = d.output2State;
           if (d.label1) document.getElementById('label-1').textContent = d.label1;
           if (d.label2) document.getElementById('label-2').textContent = d.label2;
+          if (d.deviceName) document.getElementById('device-name').textContent = d.deviceName;
         }
         if (d.type === 'status') {
           // Update sensor outputs with safe formatting
@@ -276,7 +290,7 @@
           outAmps.textContent  = (typeof d.amps  === 'number' ? d.amps.toFixed(2)  : '--');
           outWatts.textContent = (typeof d.watts === 'number' ? d.watts.toFixed(0) : '--');
           outLux.textContent   = (typeof d.lux   === 'number' ? d.lux.toFixed(1)   : '--');
-          outTime.textContent  = `Time: ${d.timestamp || '--'}`;
+          outTime.textContent  = `UpTime: ${d.uptime || '--'}`;
           
           // Update Device ID from device if available
           if (typeof d.deviceId === 'number' && d.deviceId >= 1 && d.deviceId <= 4) {
@@ -310,6 +324,9 @@
         if (d.type === 'labels') {
           const id = d.outlet === 1 ? 'label-1' : 'label-2';
           document.getElementById(id).textContent = d.text;
+        }
+        if (d.type === 'deviceName') {
+          document.getElementById('device-name').textContent = d.text;
         }
       };
       
@@ -406,6 +423,20 @@
         e.stopPropagation();
       };
     });
+
+    // Make device name editable
+    document.getElementById('device-name').onclick = (e) => {
+      const current = document.getElementById('device-name').textContent;
+      const newName = prompt('Enter new device name', current);
+      if (newName != null && newName.trim() !== '') {
+        document.getElementById('device-name').textContent = newName;
+        socket.send(JSON.stringify({
+          command: 'setDeviceName',
+          text: newName
+        }));
+      }
+      e.stopPropagation();
+    };
 
     // Initialize remote WebSocket status
     updateRemoteWSStatus('Discovering', '#FFA500'); // Orange
