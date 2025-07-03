@@ -2,48 +2,6 @@
 
 A smart power outlet controller designed for ham radio operators and electronics enthusiasts, featuring CI-V integration, WebSocket control, and comprehensive power monitoring.
 
-## Recent Improvements (2025)
-
-### Major Architecture Refactoring
-
-The firmware has undergone significant improvements to enhance reliability, maintainability, and protocol compliance:
-
-#### CI-V Protocol Enhancements
-
-- **Custom CI-V Handler**: Replaced legacy SMCIV library with project-specific `CivHandler` class
-- **Echo Loop Prevention**: Prevents infinite response loops in multi-device networks
-- **Broadcast Deduplication**: Eliminates duplicate responses within 1-second windows
-- **Protocol Compliance**: Full validation of CI-V message formats with comprehensive error handling
-- **Smart Message Routing**: CI-V responses only sent via remote WebSocket clients, not web UI
-- **Voltage Reading Fix**: Consistent calibrated voltage readings across all interfaces (web UI and WebSocket)
-- **Current Reading Fix**: Zero current display when no load present, preventing false calibrated readings
-- **Power Calculation Fix**: Aligned power validation thresholds with current validation for consistent readings
-- **Sensor Reading Fix**: Standardized lux calculations and added voltage-based current validation
-- **Lux Sensor Independence**: Identified and resolved software regression that caused lux sensor interference with power measurement circuits
-- **Independent Lux Polling**: Lux sensor now polls every 1 second, completely independent of power measurement routine (every 10 seconds)
-- **Lux Sensor Restoration**: Restored lux sensor to working state by implementing identical reading logic to original working version
-
-#### Network Reliability Improvements
-
-- **Robust WebSocket Handling**: Enhanced connection management with automatic reconnection
-- **Message Deduplication**: Prevents processing duplicate broadcasts from multiple network paths
-- **Network Topology Awareness**: Intelligent handling of complex multi-device setups
-- **Debug Transparency**: Comprehensive logging of all CI-V and network activity
-
-#### Power Monitoring Enhancements
-
-- **Calibrated Measurements**: Hardware-specific calibration for voltage and current sensors
-- **Real-time Validation**: Advanced filtering of spurious power readings
-- **Immediate Calibration Application**: All calibration changes apply instantly without restart
-- **Persistent Storage**: Calibration factors saved to non-volatile memory
-
-#### Code Quality and Maintainability
-
-- **Modular Architecture**: Clean separation of concerns across dedicated libraries
-- **Comprehensive Testing**: Extensive build and integration testing
-- **Documentation**: Detailed inline documentation and protocol specifications
-- **Production Ready**: Robust error handling and graceful degradation
-
 ## Overview
 
 The ShackMate Power Outlet is an ESP32-based smart outlet controller built for the Wyze Outdoor Outlet Model WLPPO1. It provides remote control capabilities through multiple interfaces including CI-V protocol integration for ham radio equipment, WebSocket-based web interface, and comprehensive power monitoring with HLW8012 sensors.
@@ -84,11 +42,11 @@ The project uses a modular architecture with the following key components:
 - **HardwareController**: Hardware abstraction layer for relays, LEDs, and buttons
 - **JsonBuilder**: JSON response builders for WebSocket communication
 - **NetworkManager**: Unified networking management (WebSocket server/client, UDP discovery)
-- **CivHandler**: Dedicated CI-V protocol implementation with echo loop prevention and broadcast deduplication
 - **Config**: Central configuration management
 
 ### External Libraries
 
+- **SMCIV**: CI-V protocol implementation for ham radio integration
 - **ESPAsyncWebServer**: Asynchronous web server
 - **ArduinoJson**: JSON parsing and generation
 - **WiFiManager**: Captive portal for WiFi configuration
@@ -114,9 +72,7 @@ The project uses a modular architecture with the following key components:
 
 ### 2. CI-V Protocol Support
 
-The device implements full CI-V protocol support for ham radio equipment with robust echo loop prevention and broadcast deduplication:
-
-**Supported Commands:**
+The device implements full CI-V protocol support for ham radio equipment:
 
 - **Echo Request (19 00)**: Returns device CI-V address
 - **Model ID Request (19 01)**: Returns device IP address in hex format
@@ -125,14 +81,6 @@ The device implements full CI-V protocol support for ham radio equipment with ro
   - `01` = Wyze Outdoor Power Outlet
 - **Read Outlet Status (35)**: Returns current outlet state (00-03)
 - **Set Outlet Status (35 XX)**: Sets outlet state with immediate response
-
-**Advanced Features:**
-
-- **Echo Loop Prevention**: Automatically ignores messages originating from this device to prevent infinite response loops
-- **Broadcast Deduplication**: Prevents multiple responses to the same broadcast within a 1-second window
-- **Network Topology Awareness**: Handles multi-device networks with proper message routing
-- **Robust Protocol Parsing**: Validates all CI-V message formats with comprehensive error handling
-- **Debug Logging**: Detailed logging of all CI-V requests, responses, and protocol decisions
 
 #### CI-V Address Mapping
 
@@ -182,14 +130,6 @@ The device implements full CI-V protocol support for ham radio equipment with ro
 { "command": "getCurrentCalibration" }  // Get current calibration info
 ```
 
-#### Power Calibration Commands
-
-```json
-{ "command": "calibratePower", "expectedPower": 76.0 }  // Calibrate with known power reading (watts)
-{ "command": "resetPowerCalibration" }  // Reset to default calibration
-{ "command": "getPowerCalibration" }  // Get current calibration info
-```
-
 #### Testing Commands
 
 ```json
@@ -220,7 +160,6 @@ Real-time monitoring of electrical parameters:
 - **HLW8012 Integration**: Hardware-based power measurement chip
 - **Voltage Calibration**: Software calibration for accurate voltage readings
 - **Current Calibration**: Software calibration for accurate current readings
-- **Power Calibration**: Direct power reading calibration for accurate wattage measurements
 - **Power Validation**: Automatic filtering of spurious power readings
 - **Real-time Updates**: Continuous monitoring with configurable intervals
 - **Persistent Calibration**: Calibration factors stored in non-volatile memory
@@ -249,39 +188,18 @@ Real-time monitoring of electrical parameters:
 4. **Calibration applies immediately** - all subsequent current readings use the new factor
 5. Calibration factor is saved to non-volatile memory and persists across reboots
 
-#### Power Calibration Process
-
-1. Measure actual power with a calibrated power meter or calculate expected power (Voltage × Current for resistive loads)
-2. Send calibration command with the measured power:
-   ```json
-   { "command": "calibratePower", "expectedPower": 76.0 }
-   ```
-3. Device calculates and stores calibration factor automatically
-4. **Calibration applies immediately** - all subsequent power readings use the new factor
-5. Calibration factor is saved to non-volatile memory and persists across reboots
-
-**Note**: The power calibration factor is applied in real-time to all power calculations and status updates. No device restart is required.
+**Note**: The current calibration factor is applied in real-time to all current calculations, including those used for power validation and status updates. No device restart is required.
 
 #### Power Reading Validation
 
 The system automatically validates power readings to prevent anomalies and uses calibrated sensor values:
 
-- **Current Threshold**: Power readings below 1mA current are set to 0W (aligned with current validation)
-- **Raw Current Filter**: Current readings below 1mA raw value are treated as zero (no load) before calibration
-- **Voltage-Based Current Validation**: When voltage drops below 1V, current is forced to zero regardless of sensor reading
+- **Current Threshold**: Power readings below 50mA current are set to 0W
 - **Maximum Power**: Readings above 2000W are considered spurious and filtered
 - **Maximum Current**: Current readings above 20A are capped for safety
-- **Power Factor Check**: Power readings exceeding apparent power by >2.0x are filtered (increased tolerance for reactive loads)
+- **Power Factor Check**: Power readings exceeding apparent power by >20% are filtered
 - **Calibrated Calculations**: All power validation uses calibrated voltage and current values
-- **Enhanced Debug Logging**: Detailed validation events, raw vs. validated readings, and power factor calculations
-- **Consistent Voltage Readings**: All interfaces (web UI initial load, WebSocket updates) now use calibrated voltage readings
-- **Zero Current Display**: When no load is present, current displays as 0.000A regardless of calibration factor
-- **Standardized Lux Calculation**: All lux sensor readings use consistent voltage conversion formula
-- **Lux Sensor Independence**: Restored lux sensor to working state by implementing independent polling schedule (1-second intervals)
-- **Lux Reading Isolation**: Completely separated lux sensor reading from power measurement routine to eliminate interference
-- **Power Calibration**: Direct power reading calibration for accurate wattage measurements independent of voltage/current calculations
-
-**Note**: Previous versions had inconsistencies in power/current threshold validation, sensor calculations, false readings when loads were disconnected, and overly strict power factor validation that could cause valid power readings to be rejected. These have been fixed to ensure all readings are accurate and consistent.
+- **Debug Logging**: All validation events are logged for troubleshooting
 
 ### 6. Web Interface Features
 
@@ -303,9 +221,8 @@ The system automatically validates power readings to prevent anomalies and uses 
 #### WebSocket Client
 
 - Connects to other ShackMate devices
-- **CI-V message routing**: All CI-V responses are sent only via remote WebSocket clients (not web UI)
-- **Echo loop prevention**: Intelligent filtering of duplicate or self-originated messages
-- Automatic reconnection with exponential backoff
+- CI-V message forwarding
+- Automatic reconnection
 - Network topology discovery
 
 #### HTTP Server (Port 80)
@@ -422,8 +339,8 @@ pio device monitor
 │   │   ├── device_state.h/.cpp   # State management
 │   │   ├── hardware_controller.h/.cpp  # Hardware abstraction
 │   │   ├── json_builder.h/.cpp   # JSON response builders
-│   │   ├── network_manager.h/.cpp    # Network management
-│   │   └── civ_handler.h/.cpp    # CI-V protocol implementation
+│   │   └── network_manager.h/.cpp    # Network management
+│   └── SMCIV/                # CI-V protocol library
 ├── data/
 │   └── index.html            # Web interface
 ├── include/                  # Additional headers

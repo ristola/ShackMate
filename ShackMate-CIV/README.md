@@ -180,6 +180,22 @@ pio device monitor
 - Monitor serial output for detailed debugging information
 - Check LED status for connection state
 
+## 🛡️ WebSocket Connection Robustness
+
+### Problem Analysis
+
+The ShackMate CI-V controller previously experienced intermittent WebSocket disconnects, especially under repeated message conditions. Root causes included aggressive library timeouts, lack of heartbeat/ping, no connection health monitoring, and slow reconnection.
+
+### Implemented Solutions
+
+- **WebSocket Timeout Configuration**: Tuned timeouts and buffer sizes for stability.
+- **Heartbeat/Ping Mechanism**: Periodic ping messages from the web UI keep the connection alive and detect dead peers.
+- **Connection Health Monitoring**: The system tracks connection quality and ping response times, and exposes connection statistics in the dashboard.
+- **Improved Reconnection Logic**: Faster, more reliable reconnection attempts after disconnects.
+- **Resource Management**: Buffer sizes and message handling optimized to prevent resource exhaustion under high load.
+
+These improvements ensure robust, real-time WebSocket connectivity for all supported clients.
+
 ## 📄 License
 
 Copyright (c) 2025 Half Baked Circuits. All rights reserved.

@@ -170,24 +170,8 @@ bool HardwareController::checkButton2Pressed()
 
 float HardwareController::readLuxSensor()
 {
-    // Use original working calculation - identical to oldmain.bak working version
-    uint16_t luxRaw = analogRead(PIN_LUX_ADC);
-    float luxVoltage = (luxRaw / 4095.0) * 3.3; // Convert to voltage (0-3.3V)
-    float lux = luxVoltage * (1000.0 / 3.3);    // Convert to 0-1000 scale like original
-
-    // Debug raw ADC reading to diagnose max voltage issue
-    static unsigned long lastDebug = 0;
-    if (millis() - lastDebug > 5000) // Every 5 seconds
-    {
-        Serial.printf("LUX SENSOR DEBUG: Raw ADC=%d, Voltage=%.3f, Scaled Lux=%.1f\n", luxRaw, luxVoltage, lux);
-        Serial.printf("  Expected: ADC=0-4095, Voltage=0.0-3.3V, Lux=0-1000\n");
-        Serial.printf("  Current reading suggests: %s\n",
-                      (luxRaw >= 4090) ? "SATURATED/MAX (sensor disconnected or damaged?)" : (luxRaw <= 5) ? "MINIMUM (no light or shorted?)"
-                                                                                                           : "Normal range");
-        lastDebug = millis();
-    }
-
-    return lux; // Return the scaled value like original
+    int rawValue = analogRead(PIN_LUX_ADC);
+    return rawValue * (3.3f / 4095.0f);
 }
 
 void IRAM_ATTR HardwareController::onLedTimer()

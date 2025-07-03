@@ -102,7 +102,8 @@ class ShackMateUI {
             'civ_baud': 'civ-baud',
             'civ_addr': 'civ-addr',
             'version': 'version',
-            'uptime': 'uptime'
+            'uptime': 'uptime',
+            'reboots': 'reboots'
         };
 
         // Update mapped elements

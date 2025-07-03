@@ -4,7 +4,7 @@
 // Project Configuration
 // -------------------------------------------------------------------------
 #define NAME "ShackMate - Outlet"
-#define VERSION "2.2.1"
+#define VERSION "2.1.0"
 #define AUTHOR "Half Baked Circuits"
 #define MDNS_NAME "ShackMate-PowerOutlet"
 

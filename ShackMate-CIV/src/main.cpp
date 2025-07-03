@@ -74,14 +74,21 @@ void validateConfiguration()
 volatile uint32_t stat_serial1_frames = 0;
 volatile uint32_t stat_serial1_valid = 0;
 volatile uint32_t stat_serial1_invalid = 0;
+volatile uint32_t stat_serial1_corrupted = 0;
 volatile uint32_t stat_serial1_broadcast = 0;
 volatile uint32_t stat_serial2_frames = 0;
 volatile uint32_t stat_serial2_valid = 0;
 volatile uint32_t stat_serial2_invalid = 0;
+volatile uint32_t stat_serial2_corrupted = 0;
 volatile uint32_t stat_serial2_broadcast = 0;
 volatile uint32_t stat_ws_rx = 0;
 volatile uint32_t stat_ws_tx = 0;
 volatile uint32_t stat_ws_dup = 0;
+// Reboot counter (persisted in NVS Preferences)
+uint32_t reboot_counter = 0;
+
+// Flag to signal that status update is needed (non-blocking communication between cores)
+volatile bool statusUpdatePending = false;
 
 /* N4LDR ShackMate CI-V Controller, copyright (c) 2025 Half Baked Circuits */
 
@@ -223,6 +230,14 @@ void setRgb(uint8_t r, uint8_t g, uint8_t b)
 // -------------------------------------------------------------------------
 
 // -------------------------------------------------------------------------
+// Task Priority Definitions (higher number = higher priority)
+// -------------------------------------------------------------------------
+#define PRIORITY_CIV_PROCESSING 4 // HIGHEST - Real-time CI-V serial processing
+#define PRIORITY_NETWORK 2        // MEDIUM - Network I/O, WebSocket, HTTP
+#define PRIORITY_MONITORING 1     // LOW - Background tasks, memory checks
+#define PRIORITY_IDLE 0           // LOWEST - Idle tasks only
+
+// -------------------------------------------------------------------------
 // Constants
 // -------------------------------------------------------------------------
 const unsigned long DISCOVERY_INTERVAL_MS = 2000;
@@ -304,10 +319,12 @@ void resetAllStats()
   stat_serial1_frames = 0;
   stat_serial1_valid = 0;
   stat_serial1_invalid = 0;
+  stat_serial1_corrupted = 0;
   stat_serial1_broadcast = 0;
   stat_serial2_frames = 0;
   stat_serial2_valid = 0;
   stat_serial2_invalid = 0;
+  stat_serial2_corrupted = 0;
   stat_serial2_broadcast = 0;
   stat_ws_rx = 0;
   stat_ws_tx = 0;
@@ -410,6 +427,7 @@ void broadcastStatus()
   doc["ws_server_port"] = lastDiscoveredPort.length() > 0 ? lastDiscoveredPort : "";
   doc["version"] = String(VERSION);
   doc["uptime"] = DeviceState::getUptime();
+  doc["reboots"] = reboot_counter;
   // Use ShackMateCore system info where possible
   doc["chip_id"] = getChipID();
   doc["cpu_freq"] = String(getCpuFrequency());
@@ -422,15 +440,21 @@ void broadcastStatus()
   doc["serial1_frames"] = stat_serial1_frames;
   doc["serial1_valid"] = stat_serial1_valid;
   doc["serial1_invalid"] = stat_serial1_invalid;
+  doc["serial1_corrupted"] = stat_serial1_corrupted;
   doc["serial1_broadcast"] = stat_serial1_broadcast;
   doc["serial2_frames"] = stat_serial2_frames;
   doc["serial2_valid"] = stat_serial2_valid;
   doc["serial2_invalid"] = stat_serial2_invalid;
+  doc["serial2_corrupted"] = stat_serial2_corrupted;
   doc["serial2_broadcast"] = stat_serial2_broadcast;
   doc["ws_rx"] = stat_ws_rx;
   doc["ws_tx"] = stat_ws_tx;
   doc["ws_dup"] = stat_ws_dup;
   doc["ws_status_updated"] = millis();
+
+  // Task performance metrics
+  doc["civ_task_priority"] = PRIORITY_CIV_PROCESSING;
+  doc["loop_task_priority"] = uxTaskPriorityGet(NULL); // Current task (loop) priority
 
   String status;
   serializeJson(doc, status);
@@ -507,14 +531,26 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
 // Validate CI-V frame (must be at least FE FE XX XX XX FD)
 bool isValidCivFrame(const char *buf, size_t len)
 {
-  // Must be at least FE FE XX XX XX FD (min 5 bytes)
-  if (len < 5)
+  // Must be at least FE FE XX XX XX FD (min 6 bytes for complete frame)
+  if (len < 6)
     return false;
   // Must start with FE FE and end with FD
   if ((uint8_t)buf[0] != 0xFE || (uint8_t)buf[1] != 0xFE)
     return false;
   if ((uint8_t)buf[len - 1] != 0xFD)
     return false;
+
+  // Additional corruption check: scan for embedded FE FE patterns
+  for (size_t i = 2; i < len - 3; i++)
+  {
+    if ((uint8_t)buf[i] == 0xFE && (uint8_t)buf[i + 1] == 0xFE)
+    {
+      // Found embedded frame start - this indicates corruption
+      Logger::warning("Corrupted CI-V frame detected - embedded FE FE at position " + String(i));
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -583,20 +619,38 @@ void myTaskDebug(void *parameter)
               {
                 webClient.sendTXT(hex);
                 stat_ws_tx++;
-                broadcastStatus();
+                // broadcastStatus();  // Removed direct broadcast call
                 addMessageToCache(hex);
               }
               else
               {
                 stat_ws_dup++;
-                broadcastStatus();
+                // broadcastStatus();  // Removed direct broadcast call
               }
             }
           }
           else
           {
             stat_serial1_invalid++;
-            broadcastStatus();
+
+            // Check if this was corruption (embedded FE FE) vs other invalid frame
+            bool hasEmbeddedFrame = false;
+            for (size_t i = 2; i < serial1Len - 3; i++)
+            {
+              if ((uint8_t)serial1Buf[i] == 0xFE && (uint8_t)serial1Buf[i + 1] == 0xFE)
+              {
+                hasEmbeddedFrame = true;
+                break;
+              }
+            }
+
+            if (hasEmbeddedFrame)
+            {
+              stat_serial1_corrupted++;
+              Logger::warning("Serial1 corrupted frame detected and logged");
+            }
+
+            statusUpdatePending = true; // Signal status update needed (non-blocking)
           }
 
           // --- BEGIN: Automatic reply to CI-V broadcast addressed to 00 ---
@@ -708,20 +762,38 @@ void myTaskDebug(void *parameter)
               {
                 webClient.sendTXT(hex);
                 stat_ws_tx++;
-                broadcastStatus();
+                // broadcastStatus();  // Removed direct broadcast call
                 addMessageToCache(hex);
               }
               else
               {
                 stat_ws_dup++;
-                broadcastStatus();
+                // broadcastStatus();  // Removed direct broadcast call
               }
             }
           }
           else
           {
             stat_serial2_invalid++;
-            broadcastStatus();
+
+            // Check if this was corruption (embedded FE FE) vs other invalid frame
+            bool hasEmbeddedFrame = false;
+            for (size_t i = 2; i < serial2Len - 3; i++)
+            {
+              if ((uint8_t)serial2Buf[i] == 0xFE && (uint8_t)serial2Buf[i + 1] == 0xFE)
+              {
+                hasEmbeddedFrame = true;
+                break;
+              }
+            }
+
+            if (hasEmbeddedFrame)
+            {
+              stat_serial2_corrupted++;
+              Logger::warning("Serial2 corrupted frame detected and logged");
+            }
+
+            // broadcastStatus();  // Removed direct broadcast call
           }
 
           // --- BEGIN: Automatic reply to CI-V broadcast addressed to 00 ---
@@ -798,10 +870,12 @@ void setup()
   stat_serial1_frames = 0;
   stat_serial1_valid = 0;
   stat_serial1_invalid = 0;
+  stat_serial1_corrupted = 0;
   stat_serial1_broadcast = 0;
   stat_serial2_frames = 0;
   stat_serial2_valid = 0;
   stat_serial2_invalid = 0;
+  stat_serial2_corrupted = 0;
   stat_serial2_broadcast = 0;
   stat_ws_rx = 0;
   stat_ws_tx = 0;
@@ -816,6 +890,14 @@ void setup()
   // Initialize ShackMateCore DeviceState management
   DeviceState::init();
   DeviceState::setBootTime(millis());
+
+  // Load and increment reboot counter
+  Preferences rebootPrefs;
+  rebootPrefs.begin("sys", false);
+  reboot_counter = rebootPrefs.getUInt("reboots", 0) + 1;
+  rebootPrefs.putUInt("reboots", reboot_counter);
+  rebootPrefs.end();
+  LOG_INFO("Reboot count: " + String(reboot_counter));
 
   LOG_INFO("================================================");
   LOG_INFO("        SHACKMATE CI-V CONTROLLER STARTING");
@@ -1041,14 +1123,14 @@ void setup()
   int baud = civBaud.toInt();
   if (baud <= 0)
     baud = 19200;
-  Serial1.setRxBufferSize(1024);
-  Serial1.setTxBufferSize(1024);
+  Serial1.setRxBufferSize(2048); // Increased from 1024 to 2048
+  Serial1.setTxBufferSize(2048); // Increased from 1024 to 2048
   Serial1.begin(baud, SERIAL_8N1, MY_RX1, MY_TX1);
-  Logger::info("Serial1 (CI-V (A)) started at " + String(baud) + " baud on RX=" + String(MY_RX1) + " TX=" + String(MY_TX1) + " (1KB buffers)");
-  Serial2.setRxBufferSize(1024);
-  Serial2.setTxBufferSize(1024);
+  Logger::info("Serial1 (CI-V (A)) started at " + String(baud) + " baud on RX=" + String(MY_RX1) + " TX=" + String(MY_TX1) + " (2KB buffers)");
+  Serial2.setRxBufferSize(2048); // Increased from 1024 to 2048
+  Serial2.setTxBufferSize(2048); // Increased from 1024 to 2048
   Serial2.begin(baud, SERIAL_8N1, MY_RX2, MY_TX2);
-  Logger::info("Serial2 (CI-V (B)) started at " + String(baud) + " baud on RX=" + String(MY_RX2) + " TX=" + String(MY_TX2) + " (1KB buffers)");
+  Logger::info("Serial2 (CI-V (B)) started at " + String(baud) + " baud on RX=" + String(MY_RX2) + " TX=" + String(MY_TX2) + " (2KB buffers)");
 
   // -------------------------------------------------------------------------
   // TASK/CORE ALLOCATION:
@@ -1057,16 +1139,17 @@ void setup()
   //   Core 1: myTaskDebug (CI-V serial/UDP processing only)
   //           core1UdpOtpTask (UDP/OTP broadcast, if needed)
   // -------------------------------------------------------------------------
-  // Create a separate task for CI-V/UDP processing on Core 1
-  BaseType_t result = xTaskCreatePinnedToCore(myTaskDebug, "ciV_UDP_Task", 4096, NULL, 1, NULL, 1);
+  // Create a separate task for CI-V/UDP processing on Core 1 with HIGHEST priority
+  BaseType_t result = xTaskCreatePinnedToCore(myTaskDebug, "ciV_UDP_Task", 4096, NULL, PRIORITY_CIV_PROCESSING, NULL, 1);
   if (result != pdPASS)
   {
     Logger::error("Failed to create ciV_UDP_Task!");
     ESP.restart(); // Restart if critical task creation fails
   }
+  Logger::info("CI-V task created with HIGHEST priority (" + String(PRIORITY_CIV_PROCESSING) + ") on Core 1");
 
-  // Start core 1 UDP/OTP broadcast task (remains on Core 1 if needed)
-  result = xTaskCreatePinnedToCore(core1UdpOtpTask, "core1UdpOtpTask", 6144, NULL, 1, NULL, 1);
+  // Start core 1 UDP/OTP broadcast task with lower priority
+  result = xTaskCreatePinnedToCore(core1UdpOtpTask, "core1UdpOtpTask", 6144, NULL, PRIORITY_MONITORING, NULL, 1);
   if (result != pdPASS)
   {
     Logger::warning("Failed to create core1UdpOtpTask - continuing without it");
