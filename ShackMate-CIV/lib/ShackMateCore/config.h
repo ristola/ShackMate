@@ -27,12 +27,6 @@ static constexpr size_t MAX_DEVICE_NAME_LENGTH = 64;
 static constexpr size_t MAX_LABEL_LENGTH = 32;
 static constexpr size_t MAX_CIV_MESSAGE_LENGTH = 128;
 
-// Device Configuration (CI-V Controller specific - remove duplicates)
-#define MIN_DEVICE_ID 1
-#define MAX_DEVICE_ID 4
-#define DEFAULT_DEVICE_ID 1
-#define DEFAULT_CIV_ADDRESS "B0"
-
 // CI-V Model Type Constants (for compatibility)
 #define CIV_MODEL_CIV_CONTROLLER 0x00 // 00 = CI-V Controller
 #define CIV_MODEL_CIV_GATEWAY 0x01    // 01 = CI-V Gateway
