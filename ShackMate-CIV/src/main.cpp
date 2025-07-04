@@ -1,20 +1,12 @@
-#include <stdint.h>
-// -------------------------------------------------------------------------
-// CI-V Controller Specific Configuration
-// -------------------------------------------------------------------------
-#include "../include/civ_config.h"
-
 // -------------------------------------------------------------------------
 // ShackMateCore Library Includes
 // -------------------------------------------------------------------------
-#include "../lib/ShackMateCore/logger.h"
-#include "../lib/ShackMateCore/device_state.h"
-#include "../lib/ShackMateCore/network_manager.h"
-#include "../lib/ShackMateCore/json_builder.h"
-
-// -------------------------------------------------------------------------
-// Additional JSON Library for Direct JSON Handling
-// -------------------------------------------------------------------------
+#include <civ_config.h>
+#include <logger.h>
+#include <device_state.h>
+#include <network_manager.h>
+#include <json_builder.h>
+#include <civ_handler.h>
 #include <ArduinoJson.h>
 
 // -------------------------------------------------------------------------
@@ -70,17 +62,9 @@ void validateConfiguration()
   Logger::info("Configuration validation complete");
 }
 
-// Communications statistics
-volatile uint32_t stat_serial1_frames = 0;
-volatile uint32_t stat_serial1_valid = 0;
-volatile uint32_t stat_serial1_invalid = 0;
-volatile uint32_t stat_serial1_corrupted = 0;
-volatile uint32_t stat_serial1_broadcast = 0;
-volatile uint32_t stat_serial2_frames = 0;
-volatile uint32_t stat_serial2_valid = 0;
-volatile uint32_t stat_serial2_invalid = 0;
-volatile uint32_t stat_serial2_corrupted = 0;
-volatile uint32_t stat_serial2_broadcast = 0;
+// CI-V Serial Port Handlers
+CivHandler::SerialHandler serial1Handler(Serial1, "Serial1");
+CivHandler::SerialHandler serial2Handler(Serial2, "Serial2");
 volatile uint32_t stat_ws_rx = 0;
 volatile uint32_t stat_ws_tx = 0;
 volatile uint32_t stat_ws_dup = 0;
@@ -236,6 +220,7 @@ void setRgb(uint8_t r, uint8_t g, uint8_t b)
 #define PRIORITY_NETWORK 2        // MEDIUM - Network I/O, WebSocket, HTTP
 #define PRIORITY_MONITORING 1     // LOW - Background tasks, memory checks
 #define PRIORITY_IDLE 0           // LOWEST - Idle tasks only
+#define PRIORITY_WEBUI_EVENTS 1   // LOW - WebUI event handling
 
 // -------------------------------------------------------------------------
 // Constants
@@ -248,6 +233,16 @@ const int WIFI_BLINK_DELAY_MS = 250;
 const size_t TCP_PACKET_BUFFER_SIZE = 128;
 const int WATCHDOG_TIMEOUT_SECONDS = 10;
 
+// Use constants from config.h instead of redefining
+// WS_PING_INTERVAL_MS, WS_PING_TIMEOUT_MS, etc. are now in config.h
+const unsigned long WS_CONNECTION_TIMEOUT_MS = 15000; // Connection establishment timeout
+
+// WebSocket Connection Quality Metrics
+// Message rate limiting
+unsigned long last_message_time = 0;
+uint32_t messages_this_second = 0;
+unsigned long rate_limit_window_start = 0;
+
 // -------------------------------------------------------------------------
 // Global Objects & Variables
 // -------------------------------------------------------------------------
@@ -258,11 +253,6 @@ String civBaud = "19200";
 
 // DeviceState will handle uptime tracking
 // bootTime removed, managed by DeviceState now
-// --- Serial2 CI-V frame buffer (fixed size) ---
-#define MAX_CIV_FRAME 64
-static char serial2Buf[MAX_CIV_FRAME];
-static size_t serial2Len = 0;
-static bool serial2FrameActive = false;
 
 WebSocketsClient webClient;
 
@@ -271,7 +261,82 @@ bool otaInProgress = false;
 // Mutex for protecting shared serial message strings (for potential future use)
 portMUX_TYPE serialMsgMutex = portMUX_INITIALIZER_UNLOCKED;
 
-// These variables were unused and have been removed to clean up the code
+// --- CPU Usage Monitoring ---
+volatile uint32_t idle0_ticks = 0;
+volatile uint32_t idle1_ticks = 0;
+uint8_t cpu0_usage = 0;
+uint8_t cpu1_usage = 0;
+uint32_t last_idle0 = 0, last_idle1 = 0;
+uint64_t lastCpuSample = 0;
+
+// --- RTOS Event-Driven WebUI Updates ---
+EventGroupHandle_t webui_events;
+
+// Event bits for different update types
+#define EVENT_STATUS_UPDATE (1 << 0)    // General status update
+#define EVENT_SERIAL_STATS (1 << 1)     // Serial statistics changed
+#define EVENT_WS_STATUS (1 << 2)        // WebSocket status changed
+#define EVENT_CPU_USAGE (1 << 3)        // CPU usage updated
+#define EVENT_MEMORY_UPDATE (1 << 4)    // Memory info changed
+#define EVENT_CONFIG_CHANGE (1 << 5)    // Configuration changed
+#define EVENT_DISCOVERY_UPDATE (1 << 6) // Discovery status changed
+
+// Trigger functions for events
+void triggerStatusUpdate()
+{
+  if (webui_events)
+  {
+    xEventGroupSetBits(webui_events, EVENT_STATUS_UPDATE);
+  }
+}
+
+void triggerSerialStatsUpdate()
+{
+  if (webui_events)
+  {
+    xEventGroupSetBits(webui_events, EVENT_SERIAL_STATS);
+  }
+}
+
+void triggerWebSocketStatusUpdate()
+{
+  if (webui_events)
+  {
+    xEventGroupSetBits(webui_events, EVENT_WS_STATUS);
+  }
+}
+
+void triggerCpuUsageUpdate()
+{
+  if (webui_events)
+  {
+    xEventGroupSetBits(webui_events, EVENT_CPU_USAGE);
+  }
+}
+
+void triggerMemoryUpdate()
+{
+  if (webui_events)
+  {
+    xEventGroupSetBits(webui_events, EVENT_MEMORY_UPDATE);
+  }
+}
+
+void triggerDiscoveryUpdate()
+{
+  if (webui_events)
+  {
+    xEventGroupSetBits(webui_events, EVENT_DISCOVERY_UPDATE);
+  }
+}
+
+void triggerConfigUpdate()
+{
+  if (webui_events)
+  {
+    xEventGroupSetBits(webui_events, EVENT_CONFIG_CHANGE);
+  }
+}
 
 // -------------------------------------------------------------------------
 // Connection state machine for discovery and WebSocket management
@@ -300,6 +365,11 @@ String toHexUpper(const char *data, int len);
 void myTaskDebug(void *parameter);
 // core1UdpOtpTask: remains on Core 1 if needed (optional)
 void core1UdpOtpTask(void *parameter);
+// CPU idle tasks for usage monitoring
+void cpu0IdleTask(void *parameter);
+void cpu1IdleTask(void *parameter);
+// WebUI event handler task
+void webuiEventTask(void *parameter);
 
 // -------------------------------------------------------------------------
 // Helper Function Implementations
@@ -316,16 +386,8 @@ void initFileSystem()
 
 void resetAllStats()
 {
-  stat_serial1_frames = 0;
-  stat_serial1_valid = 0;
-  stat_serial1_invalid = 0;
-  stat_serial1_corrupted = 0;
-  stat_serial1_broadcast = 0;
-  stat_serial2_frames = 0;
-  stat_serial2_valid = 0;
-  stat_serial2_invalid = 0;
-  stat_serial2_corrupted = 0;
-  stat_serial2_broadcast = 0;
+  serial1Handler.resetStats();
+  serial2Handler.resetStats();
   stat_ws_rx = 0;
   stat_ws_tx = 0;
   stat_ws_dup = 0;
@@ -354,6 +416,162 @@ void checkMemoryHealth()
   { // Minimum ever was less than 5KB
     Logger::error("Critical memory condition detected: min " + String(minFreeHeap) + " bytes");
   }
+}
+
+// -------------------------------------------------------------------------
+// WebSocket Reliability Functions
+// -------------------------------------------------------------------------
+bool isMessageRateLimited()
+{
+  unsigned long now = millis();
+
+  // Reset counter every second
+  if (now - rate_limit_window_start >= 1000)
+  {
+    rate_limit_window_start = now;
+    messages_this_second = 0;
+  }
+
+  if (messages_this_second >= WS_MESSAGE_RATE_LIMIT)
+  {
+    auto &ws_metrics = DeviceState::getWebSocketMetrics();
+    ws_metrics.messages_rate_limited++;
+    DeviceState::updateWebSocketMetrics(ws_metrics);
+    return true;
+  }
+
+  messages_this_second++;
+  return false;
+}
+
+void sendWebSocketPing()
+{
+  auto &ws_metrics = DeviceState::getWebSocketMetrics();
+  if (webClient.isConnected() && !ws_metrics.ping_pending)
+  {
+    ws_metrics.last_ping_sent = millis();
+    ws_metrics.ping_pending = true;
+    DeviceState::updateWebSocketMetrics(ws_metrics);
+    webClient.sendPing();
+    Logger::debug("WebSocket ping sent");
+  }
+}
+
+void calculateConnectionQuality()
+{
+  auto &ws_metrics = DeviceState::getWebSocketMetrics();
+  unsigned long now = millis();
+  unsigned long uptime = now - ws_metrics.last_pong_received;
+
+  if (ws_metrics.total_disconnects == 0 && ws_metrics.ping_rtt < 1000)
+  {
+    ws_metrics.connection_quality = 100;
+  }
+  else if (ws_metrics.total_disconnects < 5 && ws_metrics.ping_rtt < 2000)
+  {
+    ws_metrics.connection_quality = 80;
+  }
+  else if (ws_metrics.total_disconnects < 10 && ws_metrics.ping_rtt < 5000)
+  {
+    ws_metrics.connection_quality = 60;
+  }
+  else
+  {
+    ws_metrics.connection_quality = 40;
+  }
+
+  // Reduce quality if connection is stale
+  if (uptime > 60000)
+  { // More than 1 minute since last pong
+    ws_metrics.connection_quality = min(ws_metrics.connection_quality, (uint8_t)20);
+  }
+
+  DeviceState::updateWebSocketMetrics(ws_metrics);
+}
+
+void attemptWebSocketReconnection()
+{
+  auto &ws_metrics = DeviceState::getWebSocketMetrics();
+  if (ws_metrics.reconnect_attempts < WS_MAX_RECONNECT_ATTEMPTS)
+  {
+    unsigned long delay_ms = WS_RECONNECT_DELAY_MS * (1 + ws_metrics.reconnect_attempts);
+    Logger::info("Attempting WebSocket reconnection in " + String(delay_ms) + "ms (attempt " +
+                 String(ws_metrics.reconnect_attempts + 1) + "/" + String(WS_MAX_RECONNECT_ATTEMPTS) + ")");
+
+    delay(delay_ms);
+
+    if (lastDiscoveredIP.length() > 0 && lastDiscoveredPort.length() > 0)
+    {
+      webClient.begin(lastDiscoveredIP, lastDiscoveredPort.toInt(), "/");
+      ws_metrics.reconnect_attempts++;
+      DeviceState::updateWebSocketMetrics(ws_metrics);
+    }
+  }
+  else
+  {
+    Logger::warning("Max WebSocket reconnection attempts reached, falling back to discovery");
+    connectionState = DISCOVERING;
+    auto &ws_metrics = DeviceState::getWebSocketMetrics();
+    ws_metrics.reconnect_attempts = 0;
+    DeviceState::updateWebSocketMetrics(ws_metrics);
+  }
+}
+
+// -------------------------------------------------------------------------
+// WebSocket forwarding helper function for CI-V frames
+// -------------------------------------------------------------------------
+
+void forwardFrameToWebSocket(const char *frameData, size_t frameLen)
+{
+  if (!webClient.isConnected())
+  {
+    return; // No WebSocket connection
+  }
+
+  // Convert frame to hex string (without serial port prefix)
+  String hex;
+  for (size_t i = 0; i < frameLen; ++i)
+  {
+    char b[4];
+    sprintf(b, "%02X ", (uint8_t)frameData[i]);
+    hex += b;
+  }
+  hex.trim();
+
+  // Check for duplicates
+  if (!isDuplicateMessage(hex))
+  {
+    if (!isMessageRateLimited())
+    {
+      webClient.sendTXT(hex);
+      addMessageToCache(hex);
+      stat_ws_tx++;
+      auto &ws_metrics = DeviceState::getWebSocketMetrics();
+      ws_metrics.messages_sent++;
+      DeviceState::updateWebSocketMetrics(ws_metrics);
+      triggerSerialStatsUpdate(); // Event-driven update for TX
+    }
+    else
+    {
+      Logger::warning("WebSocket message rate limited");
+    }
+  }
+  else
+  {
+    stat_ws_dup++;
+    triggerSerialStatsUpdate(); // Event-driven update for duplicate
+  }
+}
+
+// Serial port specific callback functions
+void forwardSerial1FrameToWebSocket(const char *frameData, size_t frameLen)
+{
+  forwardFrameToWebSocket(frameData, frameLen);
+}
+
+void forwardSerial2FrameToWebSocket(const char *frameData, size_t frameLen)
+{
+  forwardFrameToWebSocket(frameData, frameLen);
 }
 
 // -------------------------------------------------------------------------
@@ -419,6 +637,12 @@ uint32_t getFreeSketchSpace()
 // Broadcast the dashboard status JSON to all /ws clients using ShackMateCore
 void broadcastStatus()
 {
+  // Check if there are any connected WebSocket clients first
+  if (getWsClientCount() == 0)
+  {
+    return; // No clients, skip broadcast
+  }
+
   DynamicJsonDocument doc(1024);
   doc["ip"] = deviceIP;
   doc["ws_status"] = (connectionState == CONNECTED) ? "connected" : "disconnected";
@@ -436,25 +660,42 @@ void broadcastStatus()
   doc["civ_addr"] = "0x" + String(CIV_ADDRESS, HEX);
   doc["serial1"] = "RX=" + String(MY_RX1) + " TX=" + String(MY_TX1);
   doc["serial2"] = "RX=" + String(MY_RX2) + " TX=" + String(MY_TX2);
-  // Communications statistics
-  doc["serial1_frames"] = stat_serial1_frames;
-  doc["serial1_valid"] = stat_serial1_valid;
-  doc["serial1_invalid"] = stat_serial1_invalid;
-  doc["serial1_corrupted"] = stat_serial1_corrupted;
-  doc["serial1_broadcast"] = stat_serial1_broadcast;
-  doc["serial2_frames"] = stat_serial2_frames;
-  doc["serial2_valid"] = stat_serial2_valid;
-  doc["serial2_invalid"] = stat_serial2_invalid;
-  doc["serial2_corrupted"] = stat_serial2_corrupted;
-  doc["serial2_broadcast"] = stat_serial2_broadcast;
+  // Communications statistics from CI-V handlers
+  const auto &serial1Stats = serial1Handler.getStats();
+  const auto &serial2Stats = serial2Handler.getStats();
+
+  doc["serial1_frames"] = serial1Stats.totalFrames;
+  doc["serial1_valid"] = serial1Stats.validFrames;
+  doc["serial1_invalid"] = serial1Stats.totalFrames - serial1Stats.validFrames;
+  doc["serial1_corrupted"] = serial1Stats.corruptFrames;
+  doc["serial1_broadcast"] = serial1Stats.broadcastFrames;
+  doc["serial2_frames"] = serial2Stats.totalFrames;
+  doc["serial2_valid"] = serial2Stats.validFrames;
+  doc["serial2_invalid"] = serial2Stats.totalFrames - serial2Stats.validFrames;
+  doc["serial2_corrupted"] = serial2Stats.corruptFrames;
+  doc["serial2_broadcast"] = serial2Stats.broadcastFrames;
   doc["ws_rx"] = stat_ws_rx;
   doc["ws_tx"] = stat_ws_tx;
   doc["ws_dup"] = stat_ws_dup;
+
+  // WebSocket reliability metrics
+  const auto &ws_metrics = DeviceState::getWebSocketMetrics();
+  doc["ws_ping_rtt"] = ws_metrics.ping_rtt;
+  doc["ws_connection_quality"] = ws_metrics.connection_quality;
+  doc["ws_total_disconnects"] = ws_metrics.total_disconnects;
+  doc["ws_messages_sent"] = ws_metrics.messages_sent;
+  doc["ws_rate_limited"] = ws_metrics.messages_rate_limited;
+  doc["ws_reconnect_attempts"] = ws_metrics.reconnect_attempts;
+
   doc["ws_status_updated"] = millis();
 
   // Task performance metrics
   doc["civ_task_priority"] = PRIORITY_CIV_PROCESSING;
   doc["loop_task_priority"] = uxTaskPriorityGet(NULL); // Current task (loop) priority
+
+  // CPU usage
+  doc["cpu0_usage"] = cpu0_usage;
+  doc["cpu1_usage"] = cpu1_usage;
 
   String status;
   serializeJson(doc, status);
@@ -468,28 +709,67 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   if (type == WStype_CONNECTED)
   {
     wsConnectPending = false;
+    auto &ws_metrics = DeviceState::getWebSocketMetrics();
+    ws_metrics.reconnect_attempts = 0;        // Reset reconnection counter on successful connect
+    ws_metrics.last_pong_received = millis(); // Initialize pong timestamp
+    DeviceState::updateWebSocketMetrics(ws_metrics);
     Logger::info("WebSocket client connected to " + lastDiscoveredIP + ":" + lastDiscoveredPort);
     setRgb(0, 0, 64); // BLUE on websocket connect
     connectionState = CONNECTED;
-    broadcastStatus();
+    triggerWebSocketStatusUpdate(); // Event-driven update
+
+    // Configure connection settings for reliability
+    webClient.setReconnectInterval(WS_RECONNECT_DELAY_MS);
+    webClient.enableHeartbeat(WS_PING_INTERVAL_MS, WS_PING_TIMEOUT_MS, 2);
     return;
   }
+
   if (type == WStype_DISCONNECTED)
   {
     wsConnectPending = false;
-    Logger::info("WebSocket client disconnected. Returning to discovery.");
+    auto &ws_metrics = DeviceState::getWebSocketMetrics();
+    ws_metrics.total_disconnects++;
+    ws_metrics.ping_pending = false;
+    DeviceState::updateWebSocketMetrics(ws_metrics);
+    Logger::warning("WebSocket client disconnected (total: " + String(ws_metrics.total_disconnects) + ")");
+
     if (WiFi.isConnected())
     {
       setRgb(0, 64, 0); // GREEN if still on WiFi
+      // Attempt fast reconnection instead of full discovery
+      connectionState = CONNECTING;
+      attemptWebSocketReconnection();
     }
     else
     {
       setRgb(255, 0, 0); // RED if WiFi lost
+      connectionState = DISCOVERING;
     }
-    connectionState = DISCOVERING;
-    broadcastStatus();
+    triggerWebSocketStatusUpdate(); // Event-driven update
     return;
   }
+
+  if (type == WStype_PONG)
+  {
+    auto &ws_metrics = DeviceState::getWebSocketMetrics();
+    if (ws_metrics.ping_pending)
+    {
+      ws_metrics.ping_rtt = millis() - ws_metrics.last_ping_sent;
+      ws_metrics.last_pong_received = millis();
+      ws_metrics.ping_pending = false;
+      DeviceState::updateWebSocketMetrics(ws_metrics);
+      calculateConnectionQuality();
+      Logger::debug("WebSocket pong received (RTT: " + String(ws_metrics.ping_rtt) + "ms)");
+    }
+    return;
+  }
+
+  if (type == WStype_PING)
+  {
+    Logger::debug("WebSocket ping received, pong sent automatically");
+    return;
+  }
+
   if (type != WStype_TEXT)
     return;
 
@@ -515,7 +795,20 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   for (int i = 0; i < byteCount; i++)
     buffer[i] = (uint8_t)strtol(msg.substring(i * 2, i * 2 + 2).c_str(), NULL, 16);
 
-  // Forward to both serial ports
+  // Filter broadcast commands: Only allow broadcast (toAddr = 0x00) if from management address (0xEE)
+  if (byteCount >= 4) // Need at least FE FE toAddr fromAddr
+  {
+    uint8_t toAddr = buffer[2];
+    uint8_t fromAddr = buffer[3];
+    
+    if (toAddr == 0x00 && fromAddr != 0xEE)
+    {
+      Logger::warning("Filtered broadcast command from non-management address 0x" + String(fromAddr, HEX) + " - dropping");
+      return; // Drop the command
+    }
+  }
+
+  // Forward to both serial ports (legacy behavior for non-broadcast or EE commands)
   Serial1.write(buffer, byteCount);
   Serial1.flush();
   Serial2.write(buffer, byteCount);
@@ -528,332 +821,146 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
 // CI-V Task Function (runs on Core 1)
 // -------------------------------------------------------------------------
 
-// Validate CI-V frame (must be at least FE FE XX XX XX FD)
-bool isValidCivFrame(const char *buf, size_t len)
-{
-  // Must be at least FE FE XX XX XX FD (min 6 bytes for complete frame)
-  if (len < 6)
-    return false;
-  // Must start with FE FE and end with FD
-  if ((uint8_t)buf[0] != 0xFE || (uint8_t)buf[1] != 0xFE)
-    return false;
-  if ((uint8_t)buf[len - 1] != 0xFD)
-    return false;
-
-  // Additional corruption check: scan for embedded FE FE patterns
-  for (size_t i = 2; i < len - 3; i++)
-  {
-    if ((uint8_t)buf[i] == 0xFE && (uint8_t)buf[i + 1] == 0xFE)
-    {
-      // Found embedded frame start - this indicates corruption
-      Logger::warning("Corrupted CI-V frame detected - embedded FE FE at position " + String(i));
-      return false;
-    }
-  }
-
-  return true;
-}
-
 // myTaskDebug: Handles CI-V serial/UDP processing ONLY, runs on Core 1.
 void myTaskDebug(void *parameter)
 {
-  DBG_PRINTLN("ciV_UDP_Task started");
+  DBG_PRINTLN("CI-V task started with new modular handlers");
   esp_task_wdt_add(NULL); // Add this task to watchdog
-  // --- Serial1 CI-V frame buffer (fixed size) ---
-  static char serial1Buf[MAX_CIV_FRAME];
-  static size_t serial1Len = 0;
-  static bool serial1FrameActive = false;
 
   for (;;)
   {
     esp_task_wdt_reset(); // Feed watchdog for this task
-    // --- Serial1 framing (fixed buffer, overflow safe) ---
 
-    static int serial1FECount = 0;
-    while (Serial1.available())
+    // Process incoming data on both serial ports using handlers
+    bool serial1Activity = serial1Handler.processIncoming();
+    bool serial2Activity = serial2Handler.processIncoming();
+
+    // Trigger WebUI updates if there was any activity
+    if (serial1Activity || serial2Activity)
     {
-      char c = Serial1.read();
-      if (!serial1FrameActive)
-      {
-        if ((uint8_t)c == 0xFE)
-        {
-          serial1FECount++;
-          if (serial1FECount == 2)
-          {
-            serial1FrameActive = true;
-            serial1Len = 2;
-            serial1Buf[0] = 0xFE;
-            serial1Buf[1] = 0xFE;
-            serial1FECount = 0;
-          }
-        }
-        else
-        {
-          serial1FECount = 0;
-        }
-      }
-      else if (serial1Len < MAX_CIV_FRAME)
-      {
-        serial1Buf[serial1Len++] = c;
-        if ((uint8_t)c == 0xFD && serial1Len >= 5)
-        {
-          // On every frame, increment frames counter
-          stat_serial1_frames++;
-          // Validate CI-V frame before forwarding
-          if (isValidCivFrame(serial1Buf, serial1Len))
-          {
-            stat_serial1_valid++;
-            String hex;
-            for (size_t i = 0; i < serial1Len; ++i)
-            {
-              char b[4];
-              sprintf(b, "%02X ", (uint8_t)serial1Buf[i]);
-              hex += b;
-            }
-            hex.trim();
-
-            // Forward to WebSocket client (NO Serial debug print)
-            if (webClient.isConnected())
-            {
-              if (!isDuplicateMessage(hex))
-              {
-                webClient.sendTXT(hex);
-                stat_ws_tx++;
-                // broadcastStatus();  // Removed direct broadcast call
-                addMessageToCache(hex);
-              }
-              else
-              {
-                stat_ws_dup++;
-                // broadcastStatus();  // Removed direct broadcast call
-              }
-            }
-          }
-          else
-          {
-            stat_serial1_invalid++;
-
-            // Check if this was corruption (embedded FE FE) vs other invalid frame
-            bool hasEmbeddedFrame = false;
-            for (size_t i = 2; i < serial1Len - 3; i++)
-            {
-              if ((uint8_t)serial1Buf[i] == 0xFE && (uint8_t)serial1Buf[i + 1] == 0xFE)
-              {
-                hasEmbeddedFrame = true;
-                break;
-              }
-            }
-
-            if (hasEmbeddedFrame)
-            {
-              stat_serial1_corrupted++;
-              Logger::warning("Serial1 corrupted frame detected and logged");
-            }
-
-            statusUpdatePending = true; // Signal status update needed (non-blocking)
-          }
-
-          // --- BEGIN: Automatic reply to CI-V broadcast addressed to 00 ---
-          if (serial1Len >= 6)
-          { // At least FE FE 00 XX XX FD
-            uint8_t toAddr = (uint8_t)serial1Buf[2];
-            uint8_t fromAddr = (uint8_t)serial1Buf[3];
-            // If the message is a broadcast (toAddr == 0x00) and not sent from us, respond as our device
-            if (toAddr == 0x00 && fromAddr != CIV_ADDRESS)
-            {
-              stat_serial1_broadcast++;
-              uint8_t cmd = (uint8_t)serial1Buf[4];
-              uint8_t param = (serial1Len > 5) ? (uint8_t)serial1Buf[5] : 0x00;
-
-              // Prepare base reply header
-              uint8_t reply[MAX_CIV_FRAME] = {0xFE, 0xFE, fromAddr, CIV_ADDRESS, cmd};
-              size_t replyLen = 5;
-
-              // Echo subcommand if present
-              if ((cmd == 0x19) && (serial1Len > 5))
-              {
-                reply[replyLen++] = param;
-
-                // For command 19 01, append IP address as 4 bytes
-                if (param == 0x01)
-                {
-                  IPAddress ip = WiFi.localIP();
-                  reply[replyLen++] = ip[0];
-                  reply[replyLen++] = ip[1];
-                  reply[replyLen++] = ip[2];
-                  reply[replyLen++] = ip[3];
-                }
-                else if (param == 0x00)
-                {
-                  // For 19 00, append our CI-V address
-                  reply[replyLen++] = CIV_ADDRESS;
-                }
-              }
-
-              reply[replyLen++] = 0xFD; // Terminator
-
-              Serial1.write(reply, replyLen); // Use Serial1 for reply
-              Serial1.flush();
-            }
-          }
-          // --- END: Automatic reply to CI-V broadcast addressed to 00 ---
-
-          serial1FrameActive = false;
-          serial1Len = 0;
-        }
-        if (serial1Len >= MAX_CIV_FRAME)
-        {
-          // Overflow: drop frame
-          serial1FrameActive = false;
-          serial1Len = 0;
-        }
-      }
-    }
-
-    // --- Serial2 framing (fixed buffer, overflow safe) ---
-
-    static int serial2FECount = 0;
-    while (Serial2.available())
-    {
-      char c = Serial2.read();
-      if (!serial2FrameActive)
-      {
-        if ((uint8_t)c == 0xFE)
-        {
-          serial2FECount++;
-          if (serial2FECount == 2)
-          {
-            serial2FrameActive = true;
-            serial2Len = 2;
-            serial2Buf[0] = 0xFE;
-            serial2Buf[1] = 0xFE;
-            serial2FECount = 0;
-          }
-        }
-        else
-        {
-          serial2FECount = 0;
-        }
-      }
-      else if (serial2Len < MAX_CIV_FRAME)
-      {
-        serial2Buf[serial2Len++] = c;
-        if ((uint8_t)c == 0xFD && serial2Len >= 5)
-        {
-          // On every frame, increment frames counter
-          stat_serial2_frames++;
-          // Validate CI-V frame before forwarding
-          if (isValidCivFrame(serial2Buf, serial2Len))
-          {
-            stat_serial2_valid++;
-            String hex;
-            for (size_t i = 0; i < serial2Len; ++i)
-            {
-              char b[4];
-              sprintf(b, "%02X ", (uint8_t)serial2Buf[i]);
-              hex += b;
-            }
-            hex.trim();
-
-            // Forward to WebSocket client (NO Serial debug print)
-            if (webClient.isConnected())
-            {
-              if (!isDuplicateMessage(hex))
-              {
-                webClient.sendTXT(hex);
-                stat_ws_tx++;
-                // broadcastStatus();  // Removed direct broadcast call
-                addMessageToCache(hex);
-              }
-              else
-              {
-                stat_ws_dup++;
-                // broadcastStatus();  // Removed direct broadcast call
-              }
-            }
-          }
-          else
-          {
-            stat_serial2_invalid++;
-
-            // Check if this was corruption (embedded FE FE) vs other invalid frame
-            bool hasEmbeddedFrame = false;
-            for (size_t i = 2; i < serial2Len - 3; i++)
-            {
-              if ((uint8_t)serial2Buf[i] == 0xFE && (uint8_t)serial2Buf[i + 1] == 0xFE)
-              {
-                hasEmbeddedFrame = true;
-                break;
-              }
-            }
-
-            if (hasEmbeddedFrame)
-            {
-              stat_serial2_corrupted++;
-              Logger::warning("Serial2 corrupted frame detected and logged");
-            }
-
-            // broadcastStatus();  // Removed direct broadcast call
-          }
-
-          // --- BEGIN: Automatic reply to CI-V broadcast addressed to 00 ---
-          if (serial2Len >= 6)
-          { // At least FE FE 00 XX XX FD
-            uint8_t toAddr = (uint8_t)serial2Buf[2];
-            uint8_t fromAddr = (uint8_t)serial2Buf[3];
-            // If the message is a broadcast (toAddr == 0x00) and not sent from us, respond as our device
-            if (toAddr == 0x00 && fromAddr != CIV_ADDRESS)
-            {
-              stat_serial2_broadcast++;
-              uint8_t cmd = (uint8_t)serial2Buf[4];
-              uint8_t param = (serial2Len > 5) ? (uint8_t)serial2Buf[5] : 0x00;
-
-              // Prepare base reply header
-              uint8_t reply[MAX_CIV_FRAME] = {0xFE, 0xFE, fromAddr, CIV_ADDRESS, cmd};
-              size_t replyLen = 5;
-
-              // Echo subcommand if present
-              if ((cmd == 0x19) && (serial2Len > 5))
-              {
-                reply[replyLen++] = param;
-
-                // For command 19 01, append IP address as 4 bytes
-                if (param == 0x01)
-                {
-                  IPAddress ip = WiFi.localIP();
-                  reply[replyLen++] = ip[0];
-                  reply[replyLen++] = ip[1];
-                  reply[replyLen++] = ip[2];
-                  reply[replyLen++] = ip[3];
-                }
-                else if (param == 0x00)
-                {
-                  // For 19 00, append our CI-V address
-                  reply[replyLen++] = CIV_ADDRESS;
-                }
-              }
-
-              reply[replyLen++] = 0xFD; // Terminator
-
-              Serial2.write(reply, replyLen); // Use Serial2 for reply
-              Serial2.flush();
-            }
-          }
-          // --- END: Automatic reply to CI-V broadcast addressed to 00 ---
-
-          serial2FrameActive = false;
-          serial2Len = 0;
-        }
-        if (serial2Len >= MAX_CIV_FRAME)
-        {
-          // Overflow: drop frame
-          serial2FrameActive = false;
-          serial2Len = 0;
-        }
-      }
+      triggerSerialStatsUpdate();
     }
 
     vTaskDelay(1 / portTICK_PERIOD_MS);
+  }
+}
+
+// -------------------------------------------------------------------------
+// WebUI Event Handler Task (runs on Core 0)
+// Waits for events and sends targeted updates to WebSocket clients
+// -------------------------------------------------------------------------
+void webuiEventTask(void *parameter)
+{
+  esp_task_wdt_add(NULL); // Add this task to watchdog
+
+  const EventBits_t ALL_EVENTS = EVENT_STATUS_UPDATE | EVENT_SERIAL_STATS |
+                                 EVENT_WS_STATUS | EVENT_CPU_USAGE |
+                                 EVENT_MEMORY_UPDATE | EVENT_CONFIG_CHANGE |
+                                 EVENT_DISCOVERY_UPDATE;
+
+  while (1)
+  {
+    esp_task_wdt_reset(); // Feed watchdog
+
+    // Wait for any event with 1000ms timeout
+    EventBits_t eventBits = xEventGroupWaitBits(
+        webui_events,       // Event group handle
+        ALL_EVENTS,         // Bits to wait for
+        pdTRUE,             // Clear bits on exit
+        pdFALSE,            // Wait for ANY bit (not all)
+        pdMS_TO_TICKS(1000) // 1 second timeout
+    );
+
+    // Skip if no WebSocket clients connected
+    if (getWsClientCount() == 0)
+    {
+      continue;
+    }
+
+    // Handle specific events with targeted updates
+    if (eventBits & EVENT_CPU_USAGE)
+    {
+      DynamicJsonDocument doc(256);
+      doc["cpu0_usage"] = cpu0_usage;
+      doc["cpu1_usage"] = cpu1_usage;
+      String json;
+      serializeJson(doc, json);
+      wsServer.textAll(json);
+    }
+
+    if (eventBits & EVENT_MEMORY_UPDATE)
+    {
+      DynamicJsonDocument doc(256);
+      doc["free_heap"] = String(getFreeHeap() / 1024);
+      String json;
+      serializeJson(doc, json);
+      wsServer.textAll(json);
+    }
+
+    if (eventBits & EVENT_SERIAL_STATS)
+    {
+      DynamicJsonDocument doc(768); // Increased size for WebSocket metrics
+      const auto &serial1Stats = serial1Handler.getStats();
+      const auto &serial2Stats = serial2Handler.getStats();
+
+      doc["serial1_valid"] = serial1Stats.validFrames;
+      doc["serial1_invalid"] = serial1Stats.totalFrames - serial1Stats.validFrames;
+      doc["serial1_broadcast"] = serial1Stats.broadcastFrames;
+      doc["serial2_valid"] = serial2Stats.validFrames;
+      doc["serial2_invalid"] = serial2Stats.totalFrames - serial2Stats.validFrames;
+      doc["serial2_broadcast"] = serial2Stats.broadcastFrames;
+      doc["ws_rx"] = stat_ws_rx;
+      doc["ws_tx"] = stat_ws_tx;
+      doc["ws_dup"] = stat_ws_dup;
+
+      // WebSocket reliability metrics
+      const auto &ws_metrics = DeviceState::getWebSocketMetrics();
+      doc["ws_ping_rtt"] = ws_metrics.ping_rtt;
+      doc["ws_connection_quality"] = ws_metrics.connection_quality;
+      doc["ws_total_disconnects"] = ws_metrics.total_disconnects;
+      doc["ws_messages_sent"] = ws_metrics.messages_sent;
+      doc["ws_rate_limited"] = ws_metrics.messages_rate_limited;
+      doc["ws_reconnect_attempts"] = ws_metrics.reconnect_attempts;
+
+      String json;
+      serializeJson(doc, json);
+      wsServer.textAll(json);
+    }
+
+    if (eventBits & EVENT_WS_STATUS)
+    {
+      const auto &ws_metrics = DeviceState::getWebSocketMetrics();
+      DynamicJsonDocument doc(512); // Increased size for additional metrics
+      doc["ws_status"] = (connectionState == CONNECTED) ? "connected" : "disconnected";
+      doc["ws_server_ip"] = lastDiscoveredIP.length() > 0 ? lastDiscoveredIP : "Not discovered";
+      doc["ws_server_port"] = lastDiscoveredPort.length() > 0 ? lastDiscoveredPort : "";
+
+      // Include connection quality in status updates
+      doc["ws_ping_rtt"] = ws_metrics.ping_rtt;
+      doc["ws_connection_quality"] = ws_metrics.connection_quality;
+      doc["ws_total_disconnects"] = ws_metrics.total_disconnects;
+      doc["ws_messages_sent"] = ws_metrics.messages_sent;
+      doc["ws_rate_limited"] = ws_metrics.messages_rate_limited;
+      doc["ws_reconnect_attempts"] = ws_metrics.reconnect_attempts;
+
+      String json;
+      serializeJson(doc, json);
+      wsServer.textAll(json);
+    }
+
+    if (eventBits & EVENT_DISCOVERY_UPDATE)
+    {
+      triggerWebSocketStatusUpdate(); // Chain to WS status update
+    }
+
+    if (eventBits & EVENT_STATUS_UPDATE)
+    {
+      // Full status update - fallback for compatibility
+      broadcastStatus();
+    }
+
+    // Memory cleanup and small delay
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
@@ -866,17 +973,7 @@ void myTaskDebug(void *parameter)
 // -------------------------------------------------------------------------
 void setup()
 {
-  // Reset all stat counters to zero on boot
-  stat_serial1_frames = 0;
-  stat_serial1_valid = 0;
-  stat_serial1_invalid = 0;
-  stat_serial1_corrupted = 0;
-  stat_serial1_broadcast = 0;
-  stat_serial2_frames = 0;
-  stat_serial2_valid = 0;
-  stat_serial2_invalid = 0;
-  stat_serial2_corrupted = 0;
-  stat_serial2_broadcast = 0;
+  // Reset WebSocket statistics to zero on boot (CI-V stats handled by handlers)
   stat_ws_rx = 0;
   stat_ws_tx = 0;
   stat_ws_dup = 0;
@@ -890,6 +987,15 @@ void setup()
   // Initialize ShackMateCore DeviceState management
   DeviceState::init();
   DeviceState::setBootTime(millis());
+
+  // Initialize RTOS event group for WebUI updates
+  webui_events = xEventGroupCreate();
+  if (webui_events == NULL)
+  {
+    Logger::error("Failed to create WebUI event group!");
+    ESP.restart();
+  }
+  Logger::info("WebUI event group created successfully");
 
   // Load and increment reboot counter
   Preferences rebootPrefs;
@@ -969,7 +1075,7 @@ void setup()
   // Ensure RGB is green when connected to WiFi and not yet connected to websocket
   deviceIP = WiFi.localIP().toString();
   Logger::info("Connected, IP address: " + deviceIP);
-  broadcastStatus();
+  triggerStatusUpdate(); // Event-driven status update after WiFi connection
 
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   struct tm timeinfo;
@@ -1036,13 +1142,15 @@ void setup()
                 });
   httpServer.on("/reset_stats", HTTP_POST, [](AsyncWebServerRequest *req)
                 {
-      resetAllStats();
-      DynamicJsonDocument doc(128);
-      doc["status"] = "ok";
-      String response;
-      serializeJson(doc, response);
-      req->send(200, "application/json", response);
-      broadcastStatus(); });
+                  resetAllStats();
+                  DynamicJsonDocument doc(128);
+                  doc["status"] = "ok";
+                  String response;
+                  serializeJson(doc, response);
+                  req->send(200, "application/json", response);
+                  triggerSerialStatsUpdate(); // Event-driven stats update after reset
+                  triggerStatusUpdate();      // Also trigger status update for completeness
+                });
   httpServer.addHandler(&wsServer);
   httpServer.begin();
   DBG_PRINTLN("HTTP server started on port 80");
@@ -1072,7 +1180,7 @@ void setup()
 
   preferences.putString("civ_baud", civBaud);
   preferences.end();
-  broadcastStatus();
+  triggerConfigUpdate(); // Event-driven config update after baud rate change
 
   // Register WebSocket client event handler before any use/begin
   webClient.onEvent(webSocketClientEvent);
@@ -1090,8 +1198,9 @@ void setup()
                      otaInProgress = false;
                      esp_task_wdt_init(10, true); // Re-enable watchdog after OTA
                      esp_task_wdt_add(NULL);      // Add current (loop) task to WDT
-                     setRgb(0, 64, 0); // Green after OTA done
-                     broadcastStatus(); });
+                     setRgb(0, 64, 0);            // Green after OTA done
+                     triggerStatusUpdate();       // Event-driven status update after OTA completion
+                   });
   ArduinoOTA.onProgress([&](unsigned int progress, unsigned int total)
                         {
     static unsigned long lastBlink = 0;
@@ -1123,14 +1232,19 @@ void setup()
   int baud = civBaud.toInt();
   if (baud <= 0)
     baud = 19200;
+
+  // Initialize CI-V handlers with buffer configuration
   Serial1.setRxBufferSize(2048); // Increased from 1024 to 2048
   Serial1.setTxBufferSize(2048); // Increased from 1024 to 2048
-  Serial1.begin(baud, SERIAL_8N1, MY_RX1, MY_TX1);
-  Logger::info("Serial1 (CI-V (A)) started at " + String(baud) + " baud on RX=" + String(MY_RX1) + " TX=" + String(MY_TX1) + " (2KB buffers)");
   Serial2.setRxBufferSize(2048); // Increased from 1024 to 2048
   Serial2.setTxBufferSize(2048); // Increased from 1024 to 2048
-  Serial2.begin(baud, SERIAL_8N1, MY_RX2, MY_TX2);
-  Logger::info("Serial2 (CI-V (B)) started at " + String(baud) + " baud on RX=" + String(MY_RX2) + " TX=" + String(MY_TX2) + " (2KB buffers)");
+
+  serial1Handler.begin(baud, MY_RX1, MY_TX1);
+  serial2Handler.begin(baud, MY_RX2, MY_TX2);
+
+  // Set up WebSocket forwarding callbacks for CI-V handlers
+  serial1Handler.setFrameCallback(forwardSerial1FrameToWebSocket);
+  serial2Handler.setFrameCallback(forwardSerial2FrameToWebSocket);
 
   // -------------------------------------------------------------------------
   // TASK/CORE ALLOCATION:
@@ -1153,6 +1267,21 @@ void setup()
   if (result != pdPASS)
   {
     Logger::warning("Failed to create core1UdpOtpTask - continuing without it");
+  }
+
+  // Start CPU idle tasks for usage monitoring
+  xTaskCreatePinnedToCore(cpu0IdleTask, "cpu0IdleTask", 2048, NULL, 0, NULL, 0); // Core 0
+  xTaskCreatePinnedToCore(cpu1IdleTask, "cpu1IdleTask", 2048, NULL, 0, NULL, 1); // Core 1
+
+  // Start WebUI event handler task on Core 0
+  result = xTaskCreatePinnedToCore(webuiEventTask, "webuiEventTask", 4096, NULL, PRIORITY_WEBUI_EVENTS, NULL, 0);
+  if (result != pdPASS)
+  {
+    Logger::warning("Failed to create webuiEventTask - using fallback polling");
+  }
+  else
+  {
+    Logger::info("WebUI event task created on Core 0");
   }
 
   // Enable 10-second watchdog for loop() task (runs on Core 0)
@@ -1229,7 +1358,7 @@ void loop()
             lastDiscoveredIP = ip;
             lastDiscoveredPort = port;
             connectionState = CONNECTING;
-            broadcastStatus(); // Immediately update web UI with discovered server info
+            triggerDiscoveryUpdate(); // Event-driven update for discovery
           }
         }
       }
@@ -1265,8 +1394,8 @@ void loop()
       preferences.end();
       WiFi.disconnect(true, true);
       Logger::warning("WiFi credentials erased! Rebooting in 2 seconds...");
-      setRgb(255, 140, 0); // Orange for erase event
-      broadcastStatus();
+      setRgb(255, 140, 0);   // Orange for erase event
+      triggerStatusUpdate(); // Event-driven status update before reboot
       delay(2000);
       ESP.restart();
     }
@@ -1285,17 +1414,96 @@ void loop()
     lastMemoryCheck = now;
   }
 
-  // Periodic status update (every 2 seconds) to keep uptime current
-  static unsigned long lastStatusUpdate = 0;
-  if (now - lastStatusUpdate > 2000)
+  // Event-driven memory and uptime updates (every 2 seconds)
+  static unsigned long lastMemoryUpdate = 0;
+  if (now - lastMemoryUpdate > 2000)
   {
-    broadcastStatus();
-    lastStatusUpdate = now;
+    triggerMemoryUpdate(); // Event-driven memory status update
+    lastMemoryUpdate = now;
+  }
+
+  // CPU usage monitoring
+  uint64_t now_us = esp_timer_get_time();
+  if (now_us - lastCpuSample > 2000000)
+  { // 2 seconds in microseconds
+    uint32_t cur_idle0 = idle0_ticks, cur_idle1 = idle1_ticks;
+    uint32_t idle0_delta = cur_idle0 - last_idle0;
+    uint32_t idle1_delta = cur_idle1 - last_idle1;
+    // 2s / 1ms per vTaskDelay(1) = 2000 expected ticks if fully idle
+    cpu0_usage = 100 - ((idle0_delta * 100) / 2000);
+    cpu1_usage = 100 - ((idle1_delta * 100) / 2000);
+    if (cpu0_usage > 100)
+      cpu0_usage = 100;
+    if (cpu1_usage > 100)
+      cpu1_usage = 100;
+    last_idle0 = cur_idle0;
+    last_idle1 = cur_idle1;
+    lastCpuSample = now_us;
+
+    // Trigger CPU usage update event
+    triggerCpuUsageUpdate();
   }
 
   esp_task_wdt_reset(); // Feed after status push
 
+  // -------------------------------------------------------------------------
+  // WebSocket health monitoring and maintenance
+  // -------------------------------------------------------------------------
+  static unsigned long last_ping_check = 0;
+  static unsigned long last_quality_check = 0;
+
+  if (webClient.isConnected())
+  {
+    // Send periodic pings to maintain connection
+    if (now - last_ping_check > WS_PING_INTERVAL_MS)
+    {
+      sendWebSocketPing();
+      last_ping_check = now;
+    }
+
+    // Check for stale connections (ping timeout)
+    auto &ws_metrics = DeviceState::getWebSocketMetrics();
+    if (ws_metrics.ping_pending &&
+        (now - ws_metrics.last_ping_sent > WS_PING_TIMEOUT_MS))
+    {
+      Logger::warning("WebSocket ping timeout, forcing reconnection");
+      webClient.disconnect();
+      ws_metrics.ping_pending = false;
+      DeviceState::updateWebSocketMetrics(ws_metrics);
+    }
+
+    // Update connection quality metrics
+    if (now - last_quality_check > 5000)
+    { // Every 5 seconds
+      calculateConnectionQuality();
+      last_quality_check = now;
+    }
+  }
+
+  esp_task_wdt_reset(); // Feed after WebSocket health checks
+
   vTaskDelay(1 / portTICK_PERIOD_MS);
+}
+
+// -------------------------------------------------------------------------
+// CPU Idle Tasks for Usage Monitoring
+// -------------------------------------------------------------------------
+void cpu0IdleTask(void *parameter)
+{
+  while (1)
+  {
+    idle0_ticks++;
+    vTaskDelay(1 / portTICK_PERIOD_MS);
+  }
+}
+
+void cpu1IdleTask(void *parameter)
+{
+  while (1)
+  {
+    idle1_ticks++;
+    vTaskDelay(1 / portTICK_PERIOD_MS);
+  }
 }
 
 // -------------------------------------------------------------------------
@@ -1308,5 +1516,3 @@ void core1UdpOtpTask(void *parameter)
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
-
-// -------------------------------------------------------------------------
