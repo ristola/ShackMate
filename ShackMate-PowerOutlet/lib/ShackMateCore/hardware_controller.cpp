@@ -135,27 +135,54 @@ void HardwareController::performLEDHardwareTest()
 
 void HardwareController::setRelay(int relayNum, bool state)
 {
+    LOG_INFO("HardwareController::setRelay called - Relay " + String(relayNum) + " = " + String(state ? "ON" : "OFF"));
+
+    // Get current relay states
+    const auto &currentRelayState = DeviceState::getRelayState();
+    bool relay1State = currentRelayState.relay1;
+    bool relay2State = currentRelayState.relay2;
+
+    // Update the specific relay state
     if (relayNum == 1)
     {
-        DeviceState::getRelayState().relay1 = state;
+        relay1State = state;
+        LOG_DEBUG("Setting relay1 to " + String(state ? "ON" : "OFF"));
     }
     else if (relayNum == 2)
     {
-        DeviceState::getRelayState().relay2 = state;
+        relay2State = state;
+        LOG_DEBUG("Setting relay2 to " + String(state ? "ON" : "OFF"));
     }
 
+    // Use the proper DeviceState method to update both states
+    DeviceState::setRelayState(relay1State, relay2State);
+    LOG_DEBUG("DeviceState updated via setRelayState() method");
+
+    // Update hardware GPIOs
     updateRelayHardware();
-    DeviceState::saveToPreferences();
+    LOG_INFO("HardwareController::setRelay completed for relay " + String(relayNum));
 }
 
 void HardwareController::updateRelayHardware()
 {
     const auto &relayState = DeviceState::getRelayState();
 
-    digitalWrite(PIN_RELAY1, relayState.relay1 ? HIGH : LOW);
-    digitalWrite(PIN_RELAY1_LED, relayState.relay1 ? LOW : HIGH); // Inverted
-    digitalWrite(PIN_RELAY2, relayState.relay2 ? HIGH : LOW);
-    digitalWrite(PIN_RELAY2_LED, relayState.relay2 ? LOW : HIGH); // Inverted
+    LOG_INFO("updateRelayHardware: Setting GPIO pins - Relay1=" + String(relayState.relay1 ? "HIGH" : "LOW") + " (pin " + String(PIN_RELAY1) + "), Relay2=" + String(relayState.relay2 ? "HIGH" : "LOW") + " (pin " + String(PIN_RELAY2) + ")");
+
+    // More detailed GPIO logging
+    int relay1Value = relayState.relay1 ? HIGH : LOW;
+    int relay1LedValue = relayState.relay1 ? LOW : HIGH; // Inverted
+    int relay2Value = relayState.relay2 ? HIGH : LOW;
+    int relay2LedValue = relayState.relay2 ? LOW : HIGH; // Inverted
+
+    LOG_INFO("updateRelayHardware: Writing GPIO values - PIN_RELAY1(" + String(PIN_RELAY1) + ")=" + String(relay1Value) + ", PIN_RELAY1_LED(" + String(PIN_RELAY1_LED) + ")=" + String(relay1LedValue) + ", PIN_RELAY2(" + String(PIN_RELAY2) + ")=" + String(relay2Value) + ", PIN_RELAY2_LED(" + String(PIN_RELAY2_LED) + ")=" + String(relay2LedValue));
+
+    digitalWrite(PIN_RELAY1, relay1Value);
+    digitalWrite(PIN_RELAY1_LED, relay1LedValue);
+    digitalWrite(PIN_RELAY2, relay2Value);
+    digitalWrite(PIN_RELAY2_LED, relay2LedValue);
+
+    LOG_INFO("updateRelayHardware: GPIO calls completed - Physical pins should now be updated");
 }
 
 bool HardwareController::checkButton1Pressed()

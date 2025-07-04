@@ -1,21 +1,31 @@
 /*
-ShackMate Power Outlet - WebSocket Control Interface for the Wyze Outdoor Outlet Model: WLPPO1
+================================================================================
+ShackMate Power Outlet - WebSocket Control Interface
+Model: Wyze Outdoor Outlet (WLPPO1)
+================================================================================
 
 Control Output 1 and Output 2 via WebSocket Port 4000
+
 Valid Commands:
   { "command": "output1", "value": true }
   { "command": "output1", "value": false }
   { "command": "output2", "value": true }
   { "command": "output2", "value": false }
+  { "command": "setDeviceId", "deviceId": 1-4 }
+  { "command": "reboot" }
 
-Debug/Maintenance Commands:
-  { "command": "resetRebootCounter" }  // Resets the boot counter to 0
-  { "command": "testCaptivePortal", "enable": true }   // Enable captive portal status LED test mode
-  { "command": "testCaptivePortal", "enable": false }  // Disable captive portal status LED test mode
-  { "command": "testStatusLED" }                       // Toggle status LED once for testing
-  { "command": "testLEDHardware" }                     // Comprehensive LED hardware test
+Features:
+- Persistent device configuration in NVS
+- CI-V protocol support for ham radio integration
+- Real-time sensor monitoring (voltage, current, power, light)
+- Event-driven web interface updates
+- WiFi configuration portal
+- OTA firmware updates
+- Hardware button control
+================================================================================
 */
 
+// ========================= SYSTEM INCLUDES =========================
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <AsyncTCP.h>
@@ -23,122 +33,89 @@ Debug/Maintenance Commands:
 #include <Preferences.h>
 #include <ESPmDNS.h>
 #include <WiFiUdp.h>
-#include <time.h>       // For NTP and time functions
-#include <SPIFFS.h>     // For serving HTML files from filesystem
-#include <ArduinoOTA.h> // OTA update support
+#include <time.h>
+#include <SPIFFS.h>
+#include <ArduinoOTA.h>
 #include <HLW8012.h>
 #include <ArduinoJson.h>
 #include <esp_system.h>
 #include <esp_spi_flash.h>
-#include <esp_task_wdt.h>     // For watchdog timer control during OTA
-#include <WebSocketsClient.h> // For client WebSocket connections
-#include "SMCIV.h"            // For CI-V message parsing and handling
-#include <vector>             // For CI-V message data storage
+#include <esp_task_wdt.h>
+#include <WebSocketsClient.h>
+#include <vector>
 
-// New modular components (now in ShackMateCore library)
+// ========================= SHACKMATE CORE LIBRARY =========================
 #include <config.h>
 #include <logger.h>
 #include <device_state.h>
 #include <hardware_controller.h>
 #include <json_builder.h>
 #include <network_manager.h>
+#include <sensor_manager.h>
+#include <event_manager.h>
+#include <system_utils.h>
+#include <web_server_manager.h>
+#include <civ_handler.h>
 
-// Hardware timer for LED blinking
-hw_timer_t *ledTimer = nullptr;
-volatile bool timerTriggered = false;
-volatile uint32_t timerInterruptCount = 0;
+// ========================= EVENT-DRIVEN UPDATE SYSTEM =========================
 
-// Timer interrupt handler for LED blinking
-void IRAM_ATTR onLedTimer()
-{
-  timerTriggered = true;
-  timerInterruptCount++; // Count interrupts for debugging
-}
+// Sensor change detection (avoid update spam)
+static float lastVoltage = 0.0f;
+static float lastCurrent = 0.0f;
+static float lastPower = 0.0f;
+static float lastLux = 0.0f;
+static bool lastRelay1State = false;
+static bool lastRelay2State = false;
+static bool lastCivConnected = false;
 
-// Initialize LED timer for captive portal blinking
-void initLedTimer()
-{
-  ledTimer = timerBegin(0, 80, true);                // Timer 0, prescaler 80 (1MHz), count up
-  timerAttachInterrupt(ledTimer, &onLedTimer, true); // Edge interrupt
-  timerAlarmWrite(ledTimer, 250000, true);           // 250ms interval (250,000 microseconds)
-  Serial.println("LED timer initialized for captive portal blinking");
-}
+// Change detection thresholds
+#define VOLTAGE_CHANGE_THRESHOLD 1.0f  // 1V
+#define CURRENT_CHANGE_THRESHOLD 0.05f // 50mA
+#define POWER_CHANGE_THRESHOLD 5.0f    // 5W
+#define LUX_CHANGE_THRESHOLD 10.0f     // 10 lux units
 
-// Start LED blinking timer
-void startLedBlinking()
-{
-  if (ledTimer)
-  {
-    timerAlarmEnable(ledTimer);
-    Serial.println("LED blinking timer started");
-  }
-}
+// ========================= HARDWARE SENSOR SETUP =========================
 
-// Stop LED blinking timer
-void stopLedBlinking()
-{
-  if (ledTimer)
-  {
-    timerAlarmDisable(ledTimer);
-    Serial.println("LED blinking timer stopped");
-  }
-}
-
-// -------------------------------------------------------------------------
-// Project Constants (now using config.h)
-// -------------------------------------------------------------------------
-// Note: Most constants now come from config.h
-
-// Define total available RAM (adjust if needed)
-#define TOTAL_RAM 327680
-
-// Sensor pins and calibration (now using config.h)
-// Note: Pin definitions and calibration constants now come from config.h
-
-// -------------------------------------------------------------------------
-// HLW8012 Interrupt Setup (Required for CF/CF1 pulse counting)
-// -------------------------------------------------------------------------
-// Forward declarations
+// HLW8012 interrupt handlers for power monitoring
 void IRAM_ATTR hlw8012_cf_interrupt();
 void IRAM_ATTR hlw8012_cf1_interrupt();
 
-// Library expects an interrupt on both edges
 void setInterrupts()
 {
   attachInterrupt(digitalPinToInterrupt(PIN_HLW_CF1), hlw8012_cf1_interrupt, FALLING);
   attachInterrupt(digitalPinToInterrupt(PIN_HLW_CF), hlw8012_cf_interrupt, FALLING);
 }
 
-// Pin Definitions (now using config.h)
-// Note: All pin definitions now come from config.h
+// ========================= GLOBAL OBJECTS =========================
 
-// -------------------------------------------------------------------------
-// Global Objects & Variables
-// -------------------------------------------------------------------------
-DeviceState deviceState;     // Centralized state management
-HardwareController hardware; // Hardware abstraction layer
+// Core system objects
+DeviceState deviceState;
+HardwareController hardware;
 Preferences preferences;
 AsyncWebServer httpServer(80);
 AsyncWebServer wsServer(4000);
 HLW8012 hlw;
-SMCIV civHandler; // CI-V message handler instance
 
-// HLW8012 interrupt handlers (defined after hlw declaration)
+// HLW8012 interrupt handlers (must be defined after hlw object)
 void IRAM_ATTR hlw8012_cf_interrupt()
 {
   hlw.cf_interrupt();
 }
+
 void IRAM_ATTR hlw8012_cf1_interrupt()
 {
   hlw.cf1_interrupt();
 }
 
+// ========================= GLOBAL STATE VARIABLES =========================
+
+// Network and device configuration
 String deviceIP = "";
 String tcpPort = "4000";
 String wsPortStr = tcpPort;
 
+// Device persistent state
 uint32_t rebootCounter = 0;
-unsigned long lastSensorUpdate = 0;
 uint8_t deviceId = 1;
 String civAddress = "B0";
 bool relay1State = false;
@@ -146,17 +123,20 @@ bool relay2State = false;
 char label1Text[32];
 char label2Text[32];
 char deviceName[64] = "ShackMate Power Outlet";
+
+// Sensor calibration
 float voltageCalibrationFactor = 1.0f;
 bool voltageCalibrated = false;
 float currentCalibrationFactor = 1.0f;
 bool currentCalibrated = false;
+unsigned long lastSensorUpdate = 0;
 
-// Captive Portal mode flag and status LED variables
+// WiFi captive portal state
 bool captivePortalActive = false;
 unsigned long statusLedLastToggle = 0;
 bool statusLedState = false;
 
-// Button debounce globals - TODO: Move to HardwareController
+// Hardware button state (TODO: Move to HardwareController)
 volatile bool button1Pressed = false;
 volatile bool button2Pressed = false;
 unsigned long lastButton1Time = 0;
@@ -167,12 +147,91 @@ bool lastButton2State = false;
 bool button1StateStable = false;
 bool button2StateStable = false;
 
-// -------------------------------------------------------------------------
-// Power Reading Validation Functions
-// -------------------------------------------------------------------------
+// ========================= FORWARD DECLARATIONS =========================
+
+// CI-V Message Structure
+struct CivMessage
+{
+  bool valid;
+  uint8_t toAddr;
+  uint8_t fromAddr;
+  uint8_t command;
+  uint8_t subCommand;
+  std::vector<uint8_t> data;
+};
+
+// ========================= FUNCTION PROTOTYPES =========================
+
+// LED Timer Management
+void initLedTimer();
+void startLedBlinking();
+void stopLedBlinking();
+
+// Event-Driven Update System
+void initEventDrivenUpdates();
+void checkSensorChanges();
+void checkRelayStateChanges();
+void checkCivConnectionChanges();
+void processWebUpdateEvents();
+void triggerRelayStateChangeEvent();
+void triggerCivMessageEvent(const String &messageInfo = "");
+void triggerCalibrationChangeEvent(const String &calibrationInfo = "");
+
+bool getNextWebUpdateEvent(WebUpdateEvent *event);
+bool hasWebUpdateEvents();
+
+// Device State Management
+void syncRelayStatesWithDeviceState();
+uint8_t getCivAddressByte();
+
+// Sensor Reading Functions
+float getValidatedCurrent();
+float getValidatedPower();
+
+// WebSocket and Network
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
+               void *arg, unsigned char *data, size_t len);
+void sendDebugMessage(String message);
+
+// CI-V Message Handling
+CivMessage parseCivMessage(const String &hexMsg);
+bool isCivMessageForUs(const CivMessage &msg);
+bool processCivMessage(const CivMessage &msg);
+void handleReceivedCivMessage(const String &message);
+
+// HTTP Server Handlers
+void handleRoot(AsyncWebServerRequest *request);
+void handleDataJson(AsyncWebServerRequest *request);
+void handleSaveConfig(AsyncWebServerRequest *request);
+void handleRestoreConfig(AsyncWebServerRequest *request);
+
+// File and Template Processing
+String loadFile(const char *path);
+String processTemplate(String tmpl);
+
+// System Utility Functions
+String getUptime();
+String getChipID();
+int getChipRevision();
+uint32_t getFlashSize();
+uint32_t getPsramSize();
+int getCpuFrequency();
+uint32_t getFreeHeap();
+uint32_t getTotalHeap();
+uint32_t getSketchSize();
+uint32_t getFreeSketchSpace();
+float readInternalTemperature();
+
+// OTA Task
+void otaTask(void *pvParameters);
+
+// ========================= SENSOR VALIDATION FUNCTIONS =========================
 
 /**
  * @brief Get validated and calibrated current reading from HLW8012
+ *
+ * Applies calibration factor and validates against reasonable limits
+ * to prevent spurious readings that can occur with power monitoring chips.
  *
  * @return float Validated and calibrated current reading in amperes
  */
@@ -181,17 +240,17 @@ float getValidatedCurrent()
   float rawCurrent = hlw.getCurrent();
   float calibratedCurrent = rawCurrent * currentCalibrationFactor;
 
-  // Apply basic validation - negative current doesn't make sense
+  // Negative current doesn't make physical sense
   if (calibratedCurrent < 0.0f)
   {
     return 0.0f;
   }
 
-  // Cap at reasonable maximum (20A for household outlet)
+  // Cap at reasonable maximum for household outlet (20A)
   const float MAX_REASONABLE_CURRENT = 20.0f;
   if (calibratedCurrent > MAX_REASONABLE_CURRENT)
   {
-    Serial.printf("WARNING: Detected excessive current reading: %.3fA - capping at %.1fA\n",
+    Serial.printf("WARNING: Excessive current reading: %.3fA - capping at %.1fA\n",
                   calibratedCurrent, MAX_REASONABLE_CURRENT);
     return MAX_REASONABLE_CURRENT;
   }
@@ -210,34 +269,35 @@ float getValidatedCurrent()
  */
 float getValidatedPower()
 {
-  float current = getValidatedCurrent(); // Use calibrated current
+  float current = getValidatedCurrent();
   float rawPower = hlw.getActivePower();
 
-  // Define thresholds for validation
-  const float MIN_CURRENT_THRESHOLD = 0.05f;  // 50mA minimum for valid power reading
-  const float MAX_REASONABLE_POWER = 2000.0f; // 2000W maximum reasonable power for this device
+  // Validation thresholds
+  const float MIN_CURRENT_THRESHOLD = 0.05f;  // 50mA minimum for valid power
+  const float MAX_REASONABLE_POWER = 2000.0f; // 2000W maximum for this device
 
-  // If current is below threshold, power should be zero or very small
+  // If current is below threshold, power should be zero
   if (current < MIN_CURRENT_THRESHOLD)
   {
     return 0.0f;
   }
 
-  // If power reading seems unreasonable compared to current, recalculate or zero it
+  // Filter out spurious high power readings
   if (rawPower > MAX_REASONABLE_POWER)
   {
-    Serial.printf("WARNING: Detected spurious power reading: %.1fW with %.3fA - setting to 0W\n", rawPower, current);
+    Serial.printf("WARNING: Spurious power reading: %.1fW with %.3fA - setting to 0W\n",
+                  rawPower, current);
     return 0.0f;
   }
 
-  // Basic power factor validation (power shouldn't exceed voltage * current significantly)
+  // Basic power factor validation (power shouldn't exceed V*I significantly)
   float voltage = hlw.getVoltage() * voltageCalibrationFactor;
   float apparentPower = voltage * current;
 
-  // If power is significantly higher than apparent power, it's likely spurious
-  if (rawPower > (apparentPower * 1.2f)) // Allow for some power factor variation
-  {
-    Serial.printf("WARNING: Power reading %.1fW exceeds apparent power %.1fW (V=%.1f, I=%.3f) - setting to 0W\n",
+  // Power factor validation - real power shouldn't exceed apparent power
+  if (rawPower > apparentPower * 1.1f)
+  { // Allow 10% margin for measurement error
+    Serial.printf("WARNING: Power %.1fW exceeds apparent power %.1fW (V=%.1f, I=%.3f) - setting to 0W\n",
                   rawPower, apparentPower, voltage, current);
     return 0.0f;
   }
@@ -245,58 +305,37 @@ float getValidatedPower()
   return rawPower;
 }
 
-// Helper function to get CI-V address as byte value
+/**
+ * @brief Get CI-V address as byte value for current device ID
+ *
+ * @return uint8_t CI-V address byte (0xB0 + deviceId - 1)
+ */
 uint8_t getCivAddressByte()
 {
   return DeviceState::getCivAddressByte();
 }
 
-// -------------------------------------------------------------------------
-// Function Prototypes
-// -------------------------------------------------------------------------
+// ========================= DEBUG HELPER FUNCTIONS =========================
 
-String getUptime();
-String getChipID();
-int getChipRevision();
-uint32_t getFlashSize();
-uint32_t getPsramSize();
-int getCpuFrequency();
-uint32_t getFreeHeap();
-uint32_t getTotalHeap();
-uint32_t getSketchSize();
-uint32_t getFreeSketchSpace();
-float readInternalTemperature();
-
-String loadFile(const char *path);
-String processTemplate(String tmpl);
-
-// -------------------------------------------------------------------------
-// Debug Helper Function - sends debug messages to WebSocket and Logger
-// -------------------------------------------------------------------------
+/**
+ * @brief Send debug message to both serial console and WebSocket clients
+ *
+ * This function provides unified debug output that appears both in the serial
+ * console (via Logger) and in the web interface debug window.
+ *
+ * @param message Debug message to send
+ */
 void sendDebugMessage(String message)
 {
-  // Log to serial via Logger system
+  // Log to serial console via Logger system
   LOG_DEBUG(message);
 
-  // Also send to WebSocket clients for real-time debugging
+  // Send to WebSocket clients for real-time debugging in web interface
   String debugJson = "{\"type\":\"debug\",\"message\":\"" + message + "\"}";
   NetworkManager::broadcastToWebClients(debugJson);
 }
 
-// -------------------------------------------------------------------------
-// CI-V Message Handling
-// -------------------------------------------------------------------------
-
-// Structure to hold parsed CI-V message
-struct CivMessage
-{
-  bool valid;
-  uint8_t toAddr;
-  uint8_t fromAddr;
-  uint8_t command;
-  uint8_t subCommand;
-  std::vector<uint8_t> data;
-};
+// ========================= CI-V MESSAGE HANDLING =========================
 
 // Parse CI-V message from hex string
 CivMessage parseCivMessage(const String &hexMsg)
@@ -418,25 +457,54 @@ bool isCivMessageForUs(const CivMessage &msg)
   bool isBroadcast = (msg.toAddr == 0x00);
   bool isAddressedToUs = (msg.toAddr == ourAddress);
 
-  // Always log broadcast messages for debugging
+  // ENHANCED DEBUG for broadcast messages
   if (isBroadcast)
   {
-    sendDebugMessage("CI-V: BROADCAST message received - Our addr: 0x" + String(ourAddress, HEX) + " (should be B3=0xB3), FROM: 0x" + String(msg.fromAddr, HEX));
+    sendDebugMessage("*** BROADCAST MESSAGE ANALYSIS ***");
+    sendDebugMessage("TO: 0x00 (broadcast), FROM: 0x" + String(msg.fromAddr, HEX) + ", CMD: 0x" + String(msg.command, HEX) + ", SUB: 0x" + String(msg.subCommand, HEX));
+    sendDebugMessage("Our address: 0x" + String(ourAddress, HEX) + ", Broadcast filtering: " + String(CIV_ENABLE_BROADCAST_FILTERING ? "ENABLED" : "DISABLED"));
   }
 
-  if (isBroadcast || isAddressedToUs)
+  // CI-V ADDRESS FILTERING LOGIC:
+  // 1. For broadcast messages (TO=0x00): Only accept if FROM=CIV_ALLOWED_BROADCAST_SOURCE (0xEE)
+  // 2. For direct messages: Only accept if TO=our address
+
+  if (isBroadcast)
   {
-    String addrType = isBroadcast ? "broadcast" : "direct";
-    sendDebugMessage("CI-V: Message for us (" + addrType + ") - Our addr: 0x" + String(ourAddress, HEX) + ", TO: 0x" + String(msg.toAddr, HEX));
+    // Check if broadcast filtering is enabled
+    if (CIV_ENABLE_BROADCAST_FILTERING)
+    {
+      // Only accept broadcast messages FROM the allowed source address
+      if (msg.fromAddr == CIV_ALLOWED_BROADCAST_SOURCE)
+      {
+        sendDebugMessage("CI-V: Broadcast message ACCEPTED - FROM 0x" + String(CIV_ALLOWED_BROADCAST_SOURCE, HEX) + " to broadcast (0x00)");
+        return true;
+      }
+      else
+      {
+        sendDebugMessage("CI-V: Broadcast message REJECTED - FROM 0x" + String(msg.fromAddr, HEX) + " (not allowed source 0x" + String(CIV_ALLOWED_BROADCAST_SOURCE, HEX) + ")");
+        return false;
+      }
+    }
+    else
+    {
+      // Broadcast filtering disabled - accept all broadcast messages
+      sendDebugMessage("CI-V: Broadcast message ACCEPTED - filtering disabled, FROM: 0x" + String(msg.fromAddr, HEX));
+      return true;
+    }
+  }
+  else if (isAddressedToUs)
+  {
+    // Direct message to our address - always accept
+    sendDebugMessage("CI-V: Direct message ACCEPTED - TO our address 0x" + String(ourAddress, HEX) + ", FROM: 0x" + String(msg.fromAddr, HEX));
     return true;
   }
-
-  // Message not for us - only log if it's not a broadcast to reduce spam
-  if (!isBroadcast)
+  else
   {
-    sendDebugMessage("CI-V: Message not for us - Our addr: 0x" + String(ourAddress, HEX) + ", TO: 0x" + String(msg.toAddr, HEX));
+    // Message not for us - not broadcast and not to our address
+    sendDebugMessage("CI-V: Message REJECTED - TO: 0x" + String(msg.toAddr, HEX) + " (not our address 0x" + String(ourAddress, HEX) + ")");
+    return false;
   }
-  return false;
 }
 
 // Process CI-V message and generate appropriate response
@@ -475,7 +543,7 @@ bool processCivMessage(const CivMessage &msg)
 
   sendDebugMessage("CI-V: Processing command " + String(msg.command, HEX) + " subcommand " + String(msg.subCommand, HEX) + " with our address 0x" + String(ourCivAddr, HEX));
 
-  // Convert message back to hex string for SMCIV library processing
+  // Convert message back to hex string for CI-V processing
   char hexBuffer[256];
   int hexPos = 0;
 
@@ -496,15 +564,15 @@ bool processCivMessage(const CivMessage &msg)
   hexPos += snprintf(hexBuffer + hexPos, sizeof(hexBuffer) - hexPos, " FD");
 
   String hexString = String(hexBuffer);
-  sendDebugMessage("CI-V: Forwarding to SMCIV library: " + hexString);
+  sendDebugMessage("CI-V: Processing message directly: " + hexString);
 
-  // Handle specific CI-V commands directly BEFORE forwarding to SMCIV library
+  // Handle specific CI-V commands directly
   sendDebugMessage("CI-V: Checking command 0x" + String(msg.command, HEX) + " with subcommand 0x" + String(msg.subCommand, HEX));
 
   // Check for commands we handle directly (19 00 and 19 01)
   if (msg.command == 0x19 && (msg.subCommand == 0x00 || msg.subCommand == 0x01))
   {
-    sendDebugMessage("CI-V: Handling command 19 directly - WILL NOT call SMCIV library");
+    sendDebugMessage("CI-V: Handling command 19 directly");
 
     if (msg.subCommand == 0x00)
     {
@@ -518,16 +586,19 @@ bool processCivMessage(const CivMessage &msg)
 
       sendDebugMessage("<<< CI-V OUTGOING: Echo Response (19 00) - " + echoResponse);
       sendDebugMessage("    Purpose: Confirming our CI-V address (0x" + String(getCivAddressByte(), HEX) + ") to sender (0x" + String(msg.fromAddr, HEX) + ")");
+      sendDebugMessage("    Original Message: FROM=0x" + String(msg.fromAddr, HEX) + " TO=0x" + String(msg.toAddr, HEX));
 
       // Send response back via remote WebSocket client only (not to web clients)
       if (NetworkManager::isClientConnected())
       {
         NetworkManager::sendToServer(echoResponse);
         sendDebugMessage("✓ CI-V: Echo response transmitted via remote WebSocket");
+        sendDebugMessage("✓ CI-V: Response details - " + echoResponse);
       }
       else
       {
         sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, echo response NOT sent");
+        sendDebugMessage("✗ CI-V: NetworkManager client connection status: " + String(NetworkManager::isClientConnected() ? "CONNECTED" : "DISCONNECTED"));
       }
     }
     else if (msg.subCommand == 0x01)
@@ -562,7 +633,7 @@ bool processCivMessage(const CivMessage &msg)
       }
     }
 
-    sendDebugMessage("CI-V: Command 19 handled directly - exiting without calling SMCIV library");
+    sendDebugMessage("CI-V: Command 19 handled directly");
     return true; // Message was handled internally - do NOT forward to physical CI-V port
   }
 
@@ -609,33 +680,72 @@ bool processCivMessage(const CivMessage &msg)
     return true; // Message handled internally
   }
 
-  // Handle Command 35 - Read/Set Outlet Status
+  // Handle Command 35 - Set Outlet Status (NOT Read!)
+  // Command 35 is ALWAYS a SET operation. The data byte specifies the outlet state.
+  // Format: FE FE TO FROM 35 XX FD where XX is the outlet state (00-03)
   if (msg.command == 0x35)
   {
-    // For SET operations (with data), check if it's on broadcast address (00)
-    // For READ operations (no data), respond to both direct addresses and broadcast
-    if (msg.data.size() > 0 && msg.toAddr == 0x00)
+    sendDebugMessage("*** COMMAND 35 PROCESSING ***");
+    sendDebugMessage("Command 35 is SET operation, Data size: " + String(msg.data.size()) + ", TO addr: 0x" + String(msg.toAddr, HEX));
+
+    // Command 35 should ALWAYS have exactly 1 data byte specifying the outlet state
+    if (msg.data.size() != 1)
     {
-      // Check if the value is invalid (> 0x03) and respond with FA if so
-      uint8_t setValue = msg.data[0];
+      sendDebugMessage("*** INVALID COMMAND 35 - Missing or extra data bytes ***");
+      sendDebugMessage("Expected 1 data byte, got " + String(msg.data.size()) + " bytes");
+
+      // Send NAK for malformed command
+      String toAddrHex = String(msg.fromAddr, HEX);
+      toAddrHex.toUpperCase();
+      if (toAddrHex.length() == 1)
+        toAddrHex = "0" + toAddrHex;
+
+      String fromAddrHex = String(getCivAddressByte(), HEX);
+      fromAddrHex.toUpperCase();
+      if (fromAddrHex.length() == 1)
+        fromAddrHex = "0" + fromAddrHex;
+
+      String nakResponse = "FE FE " + toAddrHex + " " + fromAddrHex + " FA FD";
+      sendDebugMessage("<<< CI-V OUTGOING: NAK Response (FA) - " + nakResponse + " - Malformed command 35");
+
+      if (NetworkManager::isClientConnected())
+      {
+        NetworkManager::sendToServer(nakResponse);
+        sendDebugMessage("✓ CI-V: NAK response transmitted via remote WebSocket");
+      }
+      else
+      {
+        sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, NAK response NOT sent");
+      }
+
+      return true;
+    }
+
+    uint8_t setValue = msg.data[0];
+
+    // For broadcast SET operations (TO=0x00), ignore valid values, NAK invalid values
+    if (msg.toAddr == 0x00)
+    {
+      sendDebugMessage("*** BROADCAST SET OPERATION ***");
+      sendDebugMessage("Broadcast SET command 35 " + String(setValue, HEX) + " received");
+
       if (setValue > 0x03)
       {
-        sendDebugMessage("CI-V: Command 35 SET operation on broadcast with invalid value 0x" + String(setValue, HEX) + " - responding with FA (NAK)");
+        sendDebugMessage("Invalid broadcast value 0x" + String(setValue, HEX) + " - responding with NAK");
 
-        String toAddrHex = String(msg.fromAddr, HEX); // TO = original sender
+        String toAddrHex = String(msg.fromAddr, HEX);
         toAddrHex.toUpperCase();
         if (toAddrHex.length() == 1)
           toAddrHex = "0" + toAddrHex;
 
-        String fromAddrHex = String(getCivAddressByte(), HEX); // FROM = our address
+        String fromAddrHex = String(getCivAddressByte(), HEX);
         fromAddrHex.toUpperCase();
         if (fromAddrHex.length() == 1)
           fromAddrHex = "0" + fromAddrHex;
 
         String nakResponse = "FE FE " + toAddrHex + " " + fromAddrHex + " FA FD";
-        sendDebugMessage("<<< CI-V OUTGOING: NAK Response (FA) - " + nakResponse + " - Invalid broadcast value 0x" + String(setValue, HEX) + " to address 0x" + String(msg.fromAddr, HEX));
+        sendDebugMessage("<<< CI-V OUTGOING: NAK Response (FA) - " + nakResponse + " - Invalid broadcast SET value");
 
-        // Send response back via remote WebSocket client only (not to web clients)
         if (NetworkManager::isClientConnected())
         {
           NetworkManager::sendToServer(nakResponse);
@@ -646,14 +756,19 @@ bool processCivMessage(const CivMessage &msg)
           sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, NAK response NOT sent");
         }
 
-        return true; // Invalid broadcast SET handled with NAK response
+        return true;
       }
       else
       {
-        sendDebugMessage("CI-V: Command 35 SET operation received on broadcast address (00) with valid value - ignoring as per protocol");
-        return true; // Ignore valid broadcast SET messages for command 35
+        sendDebugMessage("Valid broadcast SET value 0x" + String(setValue, HEX) + " - ignoring as per CI-V protocol");
+        sendDebugMessage("Broadcast SET commands should be ignored by devices (no response)");
+        return true; // Ignore valid broadcast SET messages - no response
       }
     }
+
+    // For direct SET commands (TO = our address), process the command and ACK
+    sendDebugMessage("*** DIRECT SET OPERATION ***");
+    sendDebugMessage("Direct SET command 35 " + String(setValue, HEX) + " received");
 
     String toAddrHex = String(msg.fromAddr, HEX); // TO = original sender
     toAddrHex.toUpperCase();
@@ -665,206 +780,123 @@ bool processCivMessage(const CivMessage &msg)
     if (fromAddrHex.length() == 1)
       fromAddrHex = "0" + fromAddrHex;
 
-    if (msg.data.size() == 0)
+    // Validate the SET value
+    if (setValue > 0x03)
     {
-      // Read current outlet status
-      sendDebugMessage("CI-V: 35 - Read Outlet Status request (asking what outlets are on/off)");
+      sendDebugMessage("Invalid SET value 0x" + String(setValue, HEX) + " - responding with NAK");
 
-      // Calculate current status based on relay states
-      uint8_t currentStatus = 0;
-      if (relay1State && relay2State)
-        currentStatus = 0x03; // Both ON
-      else if (relay1State && !relay2State)
-        currentStatus = 0x01; // Outlet 1 ON, Outlet 2 OFF
-      else if (!relay1State && relay2State)
-        currentStatus = 0x02; // Outlet 1 OFF, Outlet 2 ON
-      else
-        currentStatus = 0x00; // Both OFF
+      String nakResponse = "FE FE " + toAddrHex + " " + fromAddrHex + " FA FD";
+      sendDebugMessage("<<< CI-V OUTGOING: NAK Response (FA) - " + nakResponse + " - Invalid SET value");
 
-      String statusHex = String(currentStatus, HEX);
-      statusHex.toUpperCase();
-      if (statusHex.length() == 1)
-        statusHex = "0" + statusHex;
-
-      String statusResponse = "FE FE " + toAddrHex + " " + fromAddrHex + " 35 " + statusHex + " FD";
-
-      String statusDescription = "";
-      switch (currentStatus)
-      {
-      case 0x00:
-        statusDescription = "Both outlets OFF";
-        break;
-      case 0x01:
-        statusDescription = "Outlet 1 ON, Outlet 2 OFF";
-        break;
-      case 0x02:
-        statusDescription = "Outlet 1 OFF, Outlet 2 ON";
-        break;
-      case 0x03:
-        statusDescription = "Both outlets ON";
-        break;
-      }
-
-      sendDebugMessage("<<< CI-V OUTGOING: Outlet Status Response (35 " + statusHex + ") - " + statusResponse + " - " + statusDescription + " to address 0x" + String(msg.fromAddr, HEX));
-
-      // Send response back via remote WebSocket client only (not to web clients)
       if (NetworkManager::isClientConnected())
       {
-        NetworkManager::sendToServer(statusResponse);
-        sendDebugMessage("✓ CI-V: Outlet status response transmitted via remote WebSocket");
+        NetworkManager::sendToServer(nakResponse);
+        sendDebugMessage("✓ CI-V: NAK response transmitted via remote WebSocket");
       }
       else
       {
-        sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, outlet status response NOT sent");
+        sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, NAK response NOT sent");
       }
+
+      return true;
     }
-    else if (msg.data.size() == 1)
+
+    // Process valid SET command
+    String commandDescription = "";
+    bool newRelay1State = false;
+    bool newRelay2State = false;
+
+    switch (setValue)
     {
-      // Set outlet status - validate value first
-      uint8_t newStatus = msg.data[0];
+    case 0x00: // Both outlets OFF
+      newRelay1State = false;
+      newRelay2State = false;
+      commandDescription = "Set both outlets OFF";
+      break;
+    case 0x01: // Outlet 1 ON, Outlet 2 OFF
+      newRelay1State = true;
+      newRelay2State = false;
+      commandDescription = "Set Outlet 1 ON, Outlet 2 OFF";
+      break;
+    case 0x02: // Outlet 1 OFF, Outlet 2 ON
+      newRelay1State = false;
+      newRelay2State = true;
+      commandDescription = "Set Outlet 1 OFF, Outlet 2 ON";
+      break;
+    case 0x03: // Both outlets ON
+      newRelay1State = true;
+      newRelay2State = true;
+      commandDescription = "Set both outlets ON";
+      break;
+    }
 
-      String commandDescription = "";
-      switch (newStatus)
-      {
-      case 0x00:
-        commandDescription = "Set both outlets OFF";
-        break;
-      case 0x01:
-        commandDescription = "Set Outlet 1 ON, Outlet 2 OFF";
-        break;
-      case 0x02:
-        commandDescription = "Set Outlet 1 OFF, Outlet 2 ON";
-        break;
-      case 0x03:
-        commandDescription = "Set both outlets ON";
-        break;
-      default:
-        commandDescription = "Set outlets to INVALID value (0x" + String(newStatus, HEX) + ")";
-        break;
-      }
+    sendDebugMessage("Processing SET command: " + commandDescription);
 
-      sendDebugMessage("CI-V: 35 " + String(newStatus, HEX) + " - " + commandDescription);
+    // Apply the new relay states
+    relay1State = newRelay1State;
+    relay2State = newRelay2State;
 
-      // Check if value is valid (00-03)
-      if (newStatus > 0x03)
-      {
-        // Invalid value - respond with FA (NAK)
-        sendDebugMessage("CI-V: Invalid outlet status: 0x" + String(newStatus, HEX) + " - responding with FA (NAK)");
+    sendDebugMessage("Updating hardware: Relay1=" + String(relay1State ? "ON" : "OFF") + ", Relay2=" + String(relay2State ? "ON" : "OFF"));
 
-        String nakResponse = "FE FE " + toAddrHex + " " + fromAddrHex + " FA FD";
-        sendDebugMessage("<<< CI-V OUTGOING: NAK Response (FA) - " + nakResponse + " - Invalid outlet status value 0x" + String(newStatus, HEX) + " to address 0x" + String(msg.fromAddr, HEX));
+    // Update hardware using HardwareController
+    hardware.setRelay(1, relay1State);
+    hardware.setRelay(2, relay2State);
 
-        // Send response back via remote WebSocket client only (not to web clients)
-        if (NetworkManager::isClientConnected())
-        {
-          NetworkManager::sendToServer(nakResponse);
-          sendDebugMessage("✓ CI-V: NAK response transmitted via remote WebSocket");
-        }
-        else
-        {
-          sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, NAK response NOT sent");
-        }
+    // Ensure global variables are in sync with DeviceState
+    syncRelayStatesWithDeviceState();
 
-        return true; // Invalid command handled with NAK response
-      }
+    // Trigger event-driven update for relay state change
+    triggerRelayStateChangeEvent();
 
-      bool newRelay1State = false;
-      bool newRelay2State = false;
+    // Send ACK response (echo back the set value)
+    String statusHex = String(setValue, HEX);
+    statusHex.toUpperCase();
+    if (statusHex.length() == 1)
+      statusHex = "0" + statusHex;
 
-      switch (newStatus)
-      {
-      case 0x00: // Both outlets OFF
-        newRelay1State = false;
-        newRelay2State = false;
-        sendDebugMessage("CI-V: Setting both outlets OFF");
-        break;
-      case 0x01: // Outlet 1 ON, Outlet 2 OFF
-        newRelay1State = true;
-        newRelay2State = false;
-        sendDebugMessage("CI-V: Setting Outlet 1 ON, Outlet 2 OFF");
-        break;
-      case 0x02: // Outlet 1 OFF, Outlet 2 ON
-        newRelay1State = false;
-        newRelay2State = true;
-        sendDebugMessage("CI-V: Setting Outlet 1 OFF, Outlet 2 ON");
-        break;
-      case 0x03: // Both outlets ON
-        newRelay1State = true;
-        newRelay2State = true;
-        sendDebugMessage("CI-V: Setting both outlets ON");
-        break;
-      }
+    String ackResponse = "FE FE " + toAddrHex + " " + fromAddrHex + " 35 " + statusHex + " FD";
+    sendDebugMessage("<<< CI-V OUTGOING: SET ACK (35 " + statusHex + ") - " + ackResponse + " - Acknowledging " + commandDescription);
 
-      // Apply the new relay states
-      relay1State = newRelay1State;
-      relay2State = newRelay2State;
-
-      // Update hardware using HardwareController
-      hardware.setRelay(1, relay1State);
-      hardware.setRelay(2, relay2State);
-
-      // Save to DeviceState
-      deviceState.setRelayState(relay1State, relay2State);
-
-      // Send updated status response (acknowledge the set command)
-      String statusHex = String(newStatus, HEX);
-      statusHex.toUpperCase();
-      if (statusHex.length() == 1)
-        statusHex = "0" + statusHex;
-
-      String statusResponse = "FE FE " + toAddrHex + " " + fromAddrHex + " 35 " + statusHex + " FD";
-
-      sendDebugMessage("<<< CI-V OUTGOING: Outlet Status Set ACK (35 " + statusHex + ") - " + statusResponse + " - Acknowledging outlet state change to address 0x" + String(msg.fromAddr, HEX));
-
-      // Send response back via remote WebSocket client only (not to web clients)
-      if (NetworkManager::isClientConnected())
-      {
-        NetworkManager::sendToServer(statusResponse);
-        sendDebugMessage("✓ CI-V: Outlet status update ACK transmitted via remote WebSocket");
-      }
-      else
-      {
-        sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, outlet status update ACK NOT sent");
-      }
-
-      // Broadcast state change to web clients
-      String stateMsg = JsonBuilder::buildStateResponse();
-      NetworkManager::broadcastToWebClients(stateMsg);
-      sendDebugMessage("CI-V: Broadcasted state change to web clients");
+    if (NetworkManager::isClientConnected())
+    {
+      NetworkManager::sendToServer(ackResponse);
+      sendDebugMessage("✓ CI-V: SET ACK response transmitted via remote WebSocket");
+    }
+    else
+    {
+      sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, SET ACK NOT sent");
     }
 
     return true; // Message handled internally
   }
 
-  // For all other commands (that we don't handle directly), forward to SMCIV library
+  // For all other commands, handle them directly with appropriate responses
   switch (msg.command)
   {
   case 0x30: // Device type/model
-    sendDebugMessage("CI-V: Device type request received - forwarding to SMCIV library");
+    sendDebugMessage("CI-V: Device type request received - handling directly");
     break;
 
   case 0x31: // Antenna/port selection
     if (msg.subCommand == 0x00)
     {
-      sendDebugMessage("CI-V: Antenna port read request - forwarding to SMCIV library");
+      sendDebugMessage("CI-V: Antenna port read request - handling directly");
     }
     else if (msg.subCommand >= 1 && msg.subCommand <= 8)
     {
-      sendDebugMessage("CI-V: Antenna port set to " + String(msg.subCommand) + " - forwarding to SMCIV library");
+      sendDebugMessage("CI-V: Antenna port set to " + String(msg.subCommand) + " - handling directly");
     }
     break;
 
   default:
-    sendDebugMessage("CI-V: Unknown command " + String(msg.command, HEX) + " - forwarding to SMCIV library");
+    sendDebugMessage("CI-V: Unknown command " + String(msg.command, HEX) + " - no additional processing needed");
     break;
   }
 
-  // Use SMCIV library to handle messages we don't handle directly
-  sendDebugMessage("CI-V: About to call SMCIV library with: " + hexString);
-  civHandler.handleIncomingWsMessage(hexString);
-  sendDebugMessage("CI-V: SMCIV library call completed");
+  // All CI-V messages are now handled directly above
+  sendDebugMessage("CI-V: Message processing completed - no external library needed");
 
-  return false; // Message was forwarded to SMCIV library - also forward to physical CI-V port
+  return true; // All messages are handled internally now
 }
 
 // -------------------------------------------------------------------------
@@ -875,6 +907,10 @@ void handleReceivedCivMessage(const String &message)
   sendDebugMessage("=== CI-V MESSAGE RECEIVED FROM WEBSOCKET CLIENT ===");
   sendDebugMessage("Raw message from remote server: '" + message + "'");
   sendDebugMessage("Message length: " + String(message.length()) + " characters");
+  sendDebugMessage("Our CI-V address: 0x" + String(getCivAddressByte(), HEX) + " (device ID " + String(DeviceState::getDeviceConfig().deviceId) + ")");
+
+  // ENHANCED DEBUG: Always show what we received
+  Serial.println("*** CI-V TRAFFIC: " + message + " ***");
 
   // Check if it looks like a CI-V hex message
   if (message.length() >= 12 && message.indexOf("FE") != -1)
@@ -887,6 +923,7 @@ void handleReceivedCivMessage(const String &message)
     if (civMsg.valid)
     {
       sendDebugMessage("CI-V message parsed successfully");
+      sendDebugMessage("Parsed details: TO=0x" + String(civMsg.toAddr, HEX) + " FROM=0x" + String(civMsg.fromAddr, HEX) + " CMD=0x" + String(civMsg.command, HEX) + " SUB=0x" + String(civMsg.subCommand, HEX));
 
       // Check if message is addressed to us
       if (isCivMessageForUs(civMsg))
@@ -921,600 +958,6 @@ void handleReceivedCivMessage(const String &message)
   }
 
   sendDebugMessage("=== CI-V MESSAGE PROCESSING COMPLETE ===");
-}
-
-// -------------------------------------------------------------------------
-// WebSocket Event Handler (Modified: No echo back to client)
-// -------------------------------------------------------------------------
-void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
-               void *arg, unsigned char *data, size_t len)
-{
-  switch (type)
-  {
-  case WS_EVT_CONNECT:
-  {
-    Serial.printf("WebSocket client #%u connected\n", client->id());
-
-    // Send comprehensive reboot banner and debug messages to the newly connected client
-    sendDebugMessage("=== DEVICE REBOOT BANNER ===");
-    sendDebugMessage("ShackMate Outlet v" + String(VERSION) + " - " + String(AUTHOR));
-    sendDebugMessage("Reboot counter: " + String(rebootCounter) + " (device has rebooted " + String(rebootCounter) + " times)");
-
-    // Get reset reason for web debug
-    esp_reset_reason_t resetReason = esp_reset_reason();
-    String resetReasonStr = "";
-    switch (resetReason)
-    {
-    case ESP_RST_POWERON:
-      resetReasonStr = "Power-on reset";
-      break;
-    case ESP_RST_EXT:
-      resetReasonStr = "External reset";
-      break;
-    case ESP_RST_SW:
-      resetReasonStr = "Software restart";
-      break;
-    case ESP_RST_PANIC:
-      resetReasonStr = "Software panic";
-      break;
-    case ESP_RST_INT_WDT:
-      resetReasonStr = "Interrupt watchdog";
-      break;
-    case ESP_RST_TASK_WDT:
-      resetReasonStr = "Task watchdog";
-      break;
-    case ESP_RST_WDT:
-      resetReasonStr = "Other watchdog";
-      break;
-    case ESP_RST_DEEPSLEEP:
-      resetReasonStr = "Deep sleep reset";
-      break;
-    case ESP_RST_BROWNOUT:
-      resetReasonStr = "Brownout reset";
-      break;
-    case ESP_RST_SDIO:
-      resetReasonStr = "SDIO reset";
-      break;
-    default:
-      resetReasonStr = "Unknown reset";
-      break;
-    }
-    sendDebugMessage("Last reset reason: " + resetReasonStr);
-    sendDebugMessage("Device started at: " + String(DeviceState::getBootTime()) + "ms");
-    sendDebugMessage("Current uptime: " + String(millis()) + "ms");
-    sendDebugMessage("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
-    sendDebugMessage("CPU frequency: " + String(ESP.getCpuFreqMHz()) + "MHz");
-    sendDebugMessage("Device IP: " + deviceIP);
-    sendDebugMessage("Web client connected! Debug messages enabled.");
-    sendDebugMessage("UDP listener active on port 4210. Waiting for 'ShackMate,IP,Port' messages...");
-    if (NetworkManager::getConnectedServerIP().length() > 0)
-    {
-      sendDebugMessage("Last discovered IP: " + NetworkManager::getConnectedServerIP() + ":" + String(NetworkManager::getConnectedServerPort()));
-      if (NetworkManager::isClientConnected())
-      {
-        sendDebugMessage("WebSocket client status: CONNECTED to " + NetworkManager::getConnectedServerIP());
-      }
-      else
-      {
-        sendDebugMessage("WebSocket client status: DISCONNECTED (last target: " + NetworkManager::getConnectedServerIP() + ")");
-      }
-    }
-    else
-    {
-      sendDebugMessage("No ShackMate devices discovered yet.");
-    }
-    sendDebugMessage("=== END REBOOT BANNER ===");
-
-    // Update sensor data in DeviceState before sending responses
-    float lux = analogRead(PIN_LUX_ADC) * (3.3f / 4095.0f);
-    float amps = getValidatedCurrent();
-    float rawV = hlw.getVoltage();
-    float volts = rawV * voltageCalibrationFactor;
-    float watts = getValidatedPower();
-    DeviceState::updateSensorData(lux, volts, amps, watts);
-
-    // 1) Send current state (relay + labels)
-    {
-      String stateMsg = JsonBuilder::buildStateResponse();
-      client->text(stateMsg);
-    }
-    // 2) Immediately send full status (including sensors & uptime)
-    {
-      String statusMsg = JsonBuilder::buildStatusResponse();
-      client->text(statusMsg);
-    }
-    break;
-  }
-  case WS_EVT_DISCONNECT:
-    Serial.printf("WebSocket client #%u disconnected\n", client->id());
-    break;
-  case WS_EVT_DATA:
-  {
-    String msg = "";
-    for (size_t i = 0; i < len; i++)
-    {
-      msg += (char)data[i];
-    }
-    // Do not echo any info back to the WebSocket client.
-    msg.trim();
-    //  msg.replace(" ", "");  // removed so that JSON strings can contain spaces
-    // Handle single-output commands
-    if (msg.startsWith("{"))
-    {
-      DynamicJsonDocument j(128);
-      if (deserializeJson(j, msg) == DeserializationError::Ok)
-      {
-        // Handle single-output commands
-        if (j.containsKey("command") && j.containsKey("value"))
-        {
-          const char *cmd = j["command"] | "";
-          bool value = j["value"] | false;
-
-          // Apply and persist new output state
-          if (strcmp(cmd, "output1") == 0)
-          {
-            relay1State = value;
-            hardware.setRelay(1, relay1State);
-            deviceState.setRelayState(relay1State, relay2State);
-          }
-          else if (strcmp(cmd, "output2") == 0)
-          {
-            relay2State = value;
-            hardware.setRelay(2, relay2State);
-            deviceState.setRelayState(relay1State, relay2State);
-          }
-
-          // Immediately broadcast updated status
-          {
-            // Uptime
-            String uptimeStr = getUptime();
-
-            // Sensor readings
-            float lux = analogRead(PIN_LUX_ADC) * (3.3f / 4095.0f);
-            float amps = getValidatedCurrent();
-            float rawV = hlw.getVoltage();
-            float volts = rawV * voltageCalibrationFactor;
-            float watts = getValidatedPower();
-
-            // Update sensor data and send status response
-            DeviceState::updateSensorData(lux, volts, amps, watts);
-            String payload = JsonBuilder::buildStatusResponse();
-            NetworkManager::broadcastToWebClients(payload);
-          }
-
-          break;
-        }
-        // (Retain legacy relay control for "cmd":"relay" messages)
-        if (j["cmd"] == "relay")
-        {
-          int r = j["relay"];
-          // Determine action
-          const char *action = j["action"] | "";
-          bool onCmd = (strcmp(action, "on") == 0);
-          // Apply relay state using HardwareController
-          hardware.setRelay(r, onCmd);
-          // Save state to DeviceState
-          if (r == 1)
-          {
-            relay1State = onCmd;
-            deviceState.setRelayState(relay1State, relay2State);
-          }
-          else
-          {
-            relay2State = onCmd;
-            deviceState.setRelayState(relay1State, relay2State);
-          }
-          break;
-        }
-        // Handle label-change commands
-        if (j.containsKey("command") && strcmp(j["command"] | "", "setLabel") == 0)
-        {
-          int outlet = j["outlet"] | 0;
-          const char *newText = j["text"] | "";
-          if (outlet == 1)
-          {
-            deviceState.setRelayLabel(1, newText);
-            strncpy(label1Text, newText, sizeof(label1Text));
-          }
-          else
-          {
-            deviceState.setRelayLabel(2, newText);
-            strncpy(label2Text, newText, sizeof(label2Text));
-          }
-
-          String out = JsonBuilder::buildLabelResponse(outlet, newText);
-          NetworkManager::broadcastToWebClients(out);
-          break;
-        }
-
-        // Handle device name change commands
-        if (j.containsKey("command") && strcmp(j["command"] | "", "setDeviceName") == 0)
-        {
-          const char *newName = j["text"] | "";
-          if (strlen(newName) > 0 && strlen(newName) < sizeof(deviceName))
-          {
-            deviceState.setDeviceName(newName);
-
-            strncpy(deviceName, newName, sizeof(deviceName) - 1);
-            deviceName[sizeof(deviceName) - 1] = '\0';
-
-            String out = JsonBuilder::buildDeviceNameResponse(newName);
-            NetworkManager::broadcastToWebClients(out);
-          }
-          break;
-        }
-
-        // Handle reboot and restore commands
-        if (j.containsKey("command") && strcmp(j["command"] | "", "reboot") == 0)
-        {
-          client->text(JsonBuilder::buildInfoResponse("Rebooting device..."));
-          delay(250);
-          ESP.restart();
-          break;
-        }
-        if (j.containsKey("command") && strcmp(j["command"] | "", "restore") == 0)
-        {
-          client->text(JsonBuilder::buildInfoResponse("Erasing WiFi credentials completely..."));
-
-          // Turn off LED before erasing credentials to ensure clean state
-          digitalWrite(PIN_STATUS_LED, HIGH); // Turn OFF (inverted logic)
-          Serial.println("Status LED turned OFF before WiFi reset");
-          delay(100);
-
-          // Complete WiFi reset to ensure captive portal activation
-          WiFiManager wm;
-          wm.resetSettings();          // Clear WiFiManager's saved credentials
-          WiFi.disconnect(true, true); // Erase WiFi creds and reset
-          WiFi.mode(WIFI_OFF);         // Turn off WiFi completely
-          delay(100);
-          WiFi.mode(WIFI_STA); // Set to station mode
-          sendDebugMessage("WiFi credentials and WiFiManager settings completely erased");
-          sendDebugMessage("Captive portal WILL activate on next boot");
-          delay(500);
-          ESP.restart();
-          break;
-        }
-        if (j.containsKey("command") && strcmp(j["command"] | "", "resetRebootCounter") == 0)
-        {
-          // Reset reboot counter manually - need to access preferences directly for now
-          preferences.begin("system", false);
-          preferences.putUInt("rebootCount", 0);
-          preferences.end();
-          deviceState.getDeviceConfig().rebootCounter = 0;
-          rebootCounter = 0;
-          client->text(JsonBuilder::buildInfoResponse("Reboot counter reset to 0"));
-          sendDebugMessage("Reboot counter manually reset to 0");
-          break;
-        }
-
-        // Handle test captive portal status LED blinking
-        if (j.containsKey("command") && strcmp(j["command"] | "", "testCaptivePortal") == 0)
-        {
-          bool enable = j["enable"] | false;
-          hardware.setCaptivePortalMode(enable);
-
-          String statusMsg = enable ? "ENABLED" : "DISABLED";
-          client->text(JsonBuilder::buildInfoResponse("Captive Portal status LED test mode " + statusMsg));
-          sendDebugMessage("Captive Portal status LED test mode " + statusMsg);
-          break;
-        }
-
-        // Test status LED manually (toggle once)
-        if (j.containsKey("command") && strcmp(j["command"] | "", "testStatusLED") == 0)
-        {
-          static bool testLedState = false;
-          testLedState = !testLedState;
-          hardware.setStatusLED(testLedState);
-          client->text(JsonBuilder::buildInfoResponse("Status LED toggled to " + String(testLedState ? "ON" : "OFF")));
-          LOG_INFO("Manual Status LED test: " + String(testLedState ? "ON" : "OFF"));
-          break;
-        }
-
-        // Comprehensive LED hardware test
-        if (j.containsKey("command") && strcmp(j["command"] | "", "testLEDHardware") == 0)
-        {
-          client->text(JsonBuilder::buildInfoResponse("Starting comprehensive LED hardware test..."));
-          LOG_INFO("=== LED HARDWARE TEST START ===");
-
-          // Use HardwareController for comprehensive LED test
-          hardware.testStatusLED(); // Test blinks for comprehensive test
-
-          LOG_INFO("=== LED HARDWARE TEST COMPLETE ===");
-          client->text(JsonBuilder::buildInfoResponse("LED hardware test complete - check serial output"));
-          break;
-        }
-
-        // Handle Device ID configuration
-        if (j.containsKey("command") && strcmp(j["command"] | "", "setDeviceId") == 0)
-        {
-          uint8_t newDeviceId = j["deviceId"] | 1;
-          if (newDeviceId >= 1 && newDeviceId <= 4)
-          {
-            const auto &currentConfig = DeviceState::getDeviceConfig();
-
-            // Only update if the device ID is actually changing
-            if (currentConfig.deviceId != newDeviceId)
-            {
-              // Update DeviceState (this will handle persistence)
-              deviceState.setDeviceId(newDeviceId);
-
-              // Update legacy globals for backward compatibility
-              deviceId = newDeviceId;
-              civAddress = "B" + String(deviceId - 1);
-
-              // Update CI-V handler with new address
-              uint8_t civAddrByte = getCivAddressByte();
-              sendDebugMessage("CI-V: Re-initializing SMCIV library with new address: 0x" + String(civAddrByte, HEX) + " (decimal " + String(civAddrByte) + ")");
-              civHandler.begin(&NetworkManager::getWebSocketClient(), &civAddrByte);
-
-              client->text(JsonBuilder::buildInfoResponse("Device ID set to " + String(deviceId) + " (CIV: " + civAddress + ")"));
-              sendDebugMessage("Device ID changed to " + String(deviceId) + ", CIV Address: " + civAddress + " (0x" + String(civAddrByte, HEX) + ")");
-            }
-            else
-            {
-              // Device ID unchanged - just acknowledge
-              client->text(JsonBuilder::buildInfoResponse("Device ID confirmed as " + String(deviceId) + " (CIV: " + civAddress + ")"));
-            }
-          }
-          else
-          {
-            client->text(JsonBuilder::buildErrorResponse("Invalid Device ID. Must be 1-4."));
-            sendDebugMessage("Invalid Device ID received: " + String(newDeviceId));
-          }
-          break;
-        }
-
-        // Handle voltage calibration commands
-        if (j.containsKey("command") && strcmp(j["command"] | "", "calibrateVoltage") == 0)
-        {
-          float expectedVoltage = j["expectedVoltage"] | 0.0f;
-          if (expectedVoltage > 0.0f && expectedVoltage <= 300.0f) // Reasonable voltage range
-          {
-            float rawVoltage = hlw.getVoltage(); // Get uncalibrated reading
-            if (rawVoltage > 0.0f)
-            {
-              float newCalibrationFactor = expectedVoltage / rawVoltage;
-              voltageCalibrationFactor = newCalibrationFactor;
-              voltageCalibrated = true;
-
-              // Save calibration to preferences
-              preferences.begin("calibration", false);
-              preferences.putFloat("voltageFactor", voltageCalibrationFactor);
-              preferences.putBool("voltageCalibrated", voltageCalibrated);
-              preferences.end();
-
-              client->text(JsonBuilder::buildInfoResponse("Voltage calibrated: factor=" + String(voltageCalibrationFactor, 4) +
-                                                          " (raw=" + String(rawVoltage, 1) + "V, expected=" + String(expectedVoltage, 1) + "V)"));
-              sendDebugMessage("Voltage calibration set: factor=" + String(voltageCalibrationFactor, 4) +
-                               " raw=" + String(rawVoltage, 1) + "V -> " + String(expectedVoltage, 1) + "V");
-            }
-            else
-            {
-              client->text(JsonBuilder::buildErrorResponse("Cannot calibrate: no voltage reading available"));
-              sendDebugMessage("Voltage calibration failed: raw voltage reading is 0");
-            }
-          }
-          else
-          {
-            client->text(JsonBuilder::buildErrorResponse("Invalid expected voltage. Must be 1-300V."));
-            sendDebugMessage("Invalid voltage calibration value: " + String(expectedVoltage));
-          }
-          break;
-        }
-
-        // Handle reset voltage calibration
-        if (j.containsKey("command") && strcmp(j["command"] | "", "resetVoltageCalibration") == 0)
-        {
-          voltageCalibrationFactor = 1.0f;
-          voltageCalibrated = false;
-
-          // Clear calibration from preferences
-          preferences.begin("calibration", false);
-          preferences.remove("voltageFactor");
-          preferences.remove("voltageCalibrated");
-          preferences.end();
-
-          client->text(JsonBuilder::buildInfoResponse("Voltage calibration reset to default (factor=1.0)"));
-          sendDebugMessage("Voltage calibration reset to default");
-          break;
-        }
-
-        // Handle get voltage calibration info
-        if (j.containsKey("command") && strcmp(j["command"] | "", "getVoltageCalibration") == 0)
-        {
-          float rawVoltage = hlw.getVoltage();
-          float calibratedVoltage = rawVoltage * voltageCalibrationFactor;
-
-          String response = "{\"type\":\"voltageCalibration\","
-                            "\"calibrationFactor\":" +
-                            String(voltageCalibrationFactor, 4) + ","
-                                                                  "\"calibrated\":" +
-                            String(voltageCalibrated ? "true" : "false") + ","
-                                                                           "\"rawVoltage\":" +
-                            String(rawVoltage, 2) + ","
-                                                    "\"calibratedVoltage\":" +
-                            String(calibratedVoltage, 2) + "}";
-          client->text(response);
-          sendDebugMessage("Voltage calibration info sent: factor=" + String(voltageCalibrationFactor, 4) +
-                           " raw=" + String(rawVoltage, 1) + "V cal=" + String(calibratedVoltage, 1) + "V");
-          break;
-        }
-
-        // Handle current calibration commands
-        if (j.containsKey("command") && strcmp(j["command"] | "", "calibrateCurrent") == 0)
-        {
-          float expectedCurrent = j["expectedCurrent"] | 0.0f;
-          if (expectedCurrent > 0.0f && expectedCurrent <= 20.0f) // Reasonable current range
-          {
-            float rawCurrent = hlw.getCurrent(); // Get uncalibrated reading
-            if (rawCurrent > 0.0f)
-            {
-              float newCalibrationFactor = expectedCurrent / rawCurrent;
-              currentCalibrationFactor = newCalibrationFactor;
-              currentCalibrated = true;
-
-              // Save calibration to preferences
-              preferences.begin("calibration", false);
-              preferences.putFloat("currentFactor", currentCalibrationFactor);
-              preferences.putBool("currentCalibrated", currentCalibrated);
-              preferences.end();
-
-              client->text(JsonBuilder::buildInfoResponse("Current calibrated: factor=" + String(currentCalibrationFactor, 4) +
-                                                          " (raw=" + String(rawCurrent, 3) + "A, expected=" + String(expectedCurrent, 3) + "A)"));
-              sendDebugMessage("Current calibration set: factor=" + String(currentCalibrationFactor, 4) +
-                               " raw=" + String(rawCurrent, 3) + "A -> " + String(expectedCurrent, 3) + "A");
-            }
-            else
-            {
-              client->text(JsonBuilder::buildErrorResponse("Cannot calibrate: no current reading available"));
-              sendDebugMessage("Current calibration failed: raw current reading is 0");
-            }
-          }
-          else
-          {
-            client->text(JsonBuilder::buildErrorResponse("Invalid expected current. Must be 0.001-20A."));
-            sendDebugMessage("Invalid current calibration value: " + String(expectedCurrent));
-          }
-          break;
-        }
-
-        // Handle reset current calibration
-        if (j.containsKey("command") && strcmp(j["command"] | "", "resetCurrentCalibration") == 0)
-        {
-          currentCalibrationFactor = 1.0f;
-          currentCalibrated = false;
-
-          // Clear calibration from preferences
-          preferences.begin("calibration", false);
-          preferences.remove("currentFactor");
-          preferences.remove("currentCalibrated");
-          preferences.end();
-
-          client->text(JsonBuilder::buildInfoResponse("Current calibration reset to default (factor=1.0)"));
-          sendDebugMessage("Current calibration reset to default");
-          break;
-        }
-
-        // Handle get current calibration info
-        if (j.containsKey("command") && strcmp(j["command"] | "", "getCurrentCalibration") == 0)
-        {
-          float rawCurrent = hlw.getCurrent();
-          float calibratedCurrent = rawCurrent * currentCalibrationFactor;
-
-          String response = "{\"type\":\"currentCalibration\","
-                            "\"calibrationFactor\":" +
-                            String(currentCalibrationFactor, 4) + ","
-                                                                  "\"calibrated\":" +
-                            String(currentCalibrated ? "true" : "false") + ","
-                                                                           "\"rawCurrent\":" +
-                            String(rawCurrent, 3) + ","
-                                                    "\"calibratedCurrent\":" +
-                            String(calibratedCurrent, 3) + "}";
-          client->text(response);
-          sendDebugMessage("Current calibration info sent: factor=" + String(currentCalibrationFactor, 4) +
-                           " raw=" + String(rawCurrent, 3) + "A cal=" + String(calibratedCurrent, 3) + "A");
-          break;
-        }
-
-        // Handle ping/pong for connection testing
-        if (j.containsKey("type"))
-        {
-          const char *msgType = j["type"] | "";
-          if (strcmp(msgType, "ping") == 0)
-          {
-            // Respond to ping with pong using JsonBuilder
-            client->text(JsonBuilder::buildPongResponse(millis()));
-            sendDebugMessage("Received ping from client, sent pong response");
-            break;
-          }
-          else if (strcmp(msgType, "pong") == 0)
-          {
-            // Received pong response - connection is healthy
-            break;
-          }
-        }
-      }
-    }
-    // Handle CI-V hex messages (must be hex format, not JSON)
-    else if (!msg.startsWith("{") && msg.length() > 0)
-    {
-      sendDebugMessage("CI-V: Received hex message: " + msg);
-      sendDebugMessage("CI-V: Message length: " + String(msg.length()) + " characters");
-
-      // Check if this looks like the echo broadcast we're expecting
-      if (msg.indexOf("FE FE 00") != -1 && msg.indexOf("19 00") != -1)
-      {
-        sendDebugMessage("CI-V: *** This looks like a broadcast echo request! ***");
-      }
-
-      // Parse and validate CI-V message
-      CivMessage civMsg = parseCivMessage(msg);
-
-      sendDebugMessage("CI-V: Parse result - valid: " + String(civMsg.valid ? "true" : "false"));
-
-      if (civMsg.valid)
-      {
-        // Check if message is addressed to us
-        if (isCivMessageForUs(civMsg))
-        {
-          sendDebugMessage("CI-V: Message IS for us - processing...");
-          // Process the CI-V message and check if it was handled internally
-          bool handledInternally = processCivMessage(civMsg);
-
-          // Only forward to physical CI-V port if NOT handled internally
-          if (!handledInternally)
-          {
-            sendDebugMessage("CI-V: Message not handled internally - forwarding to physical CI-V port");
-
-            // Also forward to physical CI-V port if available
-            String cleanHex = msg;
-            cleanHex.replace(" ", "");
-            int byteCount = cleanHex.length() / 2;
-            uint8_t buffer[128];
-
-            if (byteCount > 0 && byteCount <= 128)
-            {
-              for (int i = 0; i < byteCount; i++)
-              {
-                String byteStr = cleanHex.substring(i * 2, i * 2 + 2);
-                buffer[i] = (uint8_t)strtol(byteStr.c_str(), NULL, 16);
-              }
-
-              // Forward to physical CI-V port via Serial2
-              Serial2.write(buffer, byteCount);
-              Serial.print("Forwarded to CI-V Port: ");
-              for (int i = 0; i < byteCount; i++)
-              {
-                Serial.printf("%02X ", buffer[i]);
-              }
-              Serial.println();
-            }
-          }
-          else
-          {
-            sendDebugMessage("CI-V: Message handled internally - NOT forwarding to physical CI-V port");
-          }
-        }
-        else
-        {
-          // Message not for us - debug message removed to reduce spam
-        }
-      }
-      else
-      {
-        sendDebugMessage("CI-V: Invalid message format - ignoring");
-      }
-    }
-    else
-    {
-      sendDebugMessage("CI-V: Empty message received - ignoring");
-    }
-
-    break;
-  }
-  default:
-    break;
-  }
 }
 
 // -------------------------------------------------------------------------
@@ -1611,6 +1054,10 @@ void setup()
   // Initialize device state management
   deviceState.init();
 
+  // Note: Device ID is now loaded from NVS storage in deviceState.init()
+  // No need to hardcode it here - let users set it via web interface
+  LOG_INFO("Device ID loaded from storage: " + String(DeviceState::getDeviceConfig().deviceId));
+
   DeviceState::setBootTime(millis());
 
   LOG_INFO("================================================");
@@ -1681,7 +1128,7 @@ void setup()
   Serial.println("Status LED test complete");
 
   // Initialize LED timer for captive portal blinking
-  initLedTimer();
+  EventManager::initLedTimer();
 
   // Configure LUX ADC pin as input
   pinMode(PIN_LUX_ADC, INPUT);
@@ -1791,22 +1238,22 @@ void setup()
     if (indexFile)
     {
       Serial.println("DEBUG: index.html found, size: " + String(indexFile.size()) + " bytes");
-      indexFile.close();
     }
     else
     {
-      Serial.println("WARNING: index.html not found in SPIFFS!");
+      Serial.println("No current calibration found - using default factor: " + String(currentCalibrationFactor, 4));
     }
 
-    // List all files in SPIFFS for debugging
-    File root = SPIFFS.open("/");
-    File file = root.openNextFile();
-    Serial.println("SPIFFS files:");
-    while (file)
-    {
-      Serial.println("  " + String(file.name()) + " (" + String(file.size()) + " bytes)");
-      file = root.openNextFile();
-    }
+    // Enable HLW8012 pulse interrupts for CF and CF1
+    setInterrupts();
+    Serial.println("HLW8012 interrupts enabled for power monitoring");
+
+    // Configure hardware buttons
+    pinMode(PIN_BUTTON1, INPUT_PULLDOWN);
+    pinMode(PIN_BUTTON2, INPUT_PULLDOWN);
+
+    // Initialize button state variables
+    lastButton1State = digitalRead(PIN_BUTTON1) == HIGH;
   }
 
   // Load persisted relay states using DeviceState
@@ -1837,13 +1284,46 @@ void setup()
   // Load Device ID and CIV Address using DeviceState
   deviceId = deviceState.getDeviceConfig().deviceId;
   civAddress = deviceState.getDeviceConfig().civAddress;
+
+  Serial.println("STARTUP: Loaded deviceId=" + String(deviceId) + " from DeviceState");
+  Serial.println("STARTUP: Loaded civAddress=" + civAddress + " from DeviceState");
+
+  // Ensure civAddress is correct for the current deviceId
+  uint8_t calculatedCivAddr = getCivAddressByte();
+  String calculatedCivAddrStr = String(calculatedCivAddr, HEX);
+  calculatedCivAddrStr.toUpperCase();
+
+  // Update civAddress if it doesn't match the calculated value
+  if (civAddress != calculatedCivAddrStr)
+  {
+    Serial.println("CI-V address mismatch detected. Stored: " + civAddress + ", Calculated: " + calculatedCivAddrStr);
+    civAddress = calculatedCivAddrStr;
+    DeviceState::getDeviceConfig().civAddress = civAddress;
+    Serial.println("CI-V address corrected to: " + civAddress);
+  }
+
   Serial.println("Device ID: " + String(deviceId) + ", CIV Address: " + civAddress);
 
   // Initialize CI-V handler with NetworkManager's WebSocket client and Device ID
   uint8_t civAddrByte = getCivAddressByte();
-  sendDebugMessage("CI-V: Initializing SMCIV library with address: 0x" + String(civAddrByte, HEX) + " (decimal " + String(civAddrByte) + ")");
-  civHandler.begin(&NetworkManager::getWebSocketClient(), &civAddrByte);
+  sendDebugMessage("CI-V: Initializing CI-V handler with address: 0x" + String(civAddrByte, HEX) + " (decimal " + String(civAddrByte) + ")");
+  // Note: CI-V processing is now handled directly in processCivMessage()
   Serial.println("CI-V handler initialized with address: 0x" + String(civAddrByte, HEX));
+
+  // Log CI-V filtering configuration
+  Serial.println("CI-V Address Filtering Configuration:");
+  Serial.println("  Our CIV Address: 0x" + String(civAddrByte, HEX));
+  Serial.println("  Broadcast Filtering: " + String(CIV_ENABLE_BROADCAST_FILTERING ? "ENABLED" : "DISABLED"));
+  if (CIV_ENABLE_BROADCAST_FILTERING)
+  {
+    Serial.println("  Allowed Broadcast Source: 0x" + String(CIV_ALLOWED_BROADCAST_SOURCE, HEX));
+    Serial.println("  Will ONLY respond to broadcasts FROM 0x" + String(CIV_ALLOWED_BROADCAST_SOURCE, HEX));
+  }
+  else
+  {
+    Serial.println("  Will respond to broadcasts from ANY source");
+  }
+  Serial.println("  Will respond to direct messages TO 0x" + String(civAddrByte, HEX));
 
   Serial.println("Device Name: " + String(deviceName));
 
@@ -1868,7 +1348,7 @@ void setup()
     Serial.println("DEBUG: WiFiManager AP mode - captivePortalActive = true");
     
     // Start the hardware timer for LED blinking
-    startLedBlinking(); });
+    EventManager::startLedBlinking(); });
 
   String customHTML = "<div style='text-align:left;'>"
                       "<p><strong>Additional Configuration</strong></p>"
@@ -1894,6 +1374,19 @@ void setup()
   deviceIP = WiFi.localIP().toString();
   Serial.println("Connected, IP address: " + deviceIP);
 
+  // *** CI-V READY NOTIFICATION ***
+  Serial.println("");
+  Serial.println("================================================");
+  Serial.println("        CI-V DEVICE READY FOR CONNECTION");
+  Serial.println("================================================");
+  Serial.println("Device IP: " + deviceIP);
+  Serial.println("Device ID: " + String(DeviceState::getDeviceConfig().deviceId));
+  Serial.println("CI-V Address: 0x" + String(getCivAddressByte(), HEX));
+  Serial.println("UDP Discovery Port: " + String(UDP_PORT));
+  Serial.println("Ready to receive 'ShackMate,IP,Port' discovery");
+  Serial.println("================================================");
+  Serial.println("");
+
   // Check if we were in captive portal mode and need to reboot for proper web server initialization
   bool wasInCaptivePortal = captivePortalActive;
 
@@ -1901,7 +1394,7 @@ void setup()
   captivePortalActive = false;
 
   // Stop LED blinking timer
-  stopLedBlinking();
+  EventManager::stopLedBlinking();
 
   Serial.println("WiFi connected - Captive Portal deactivated");
 
@@ -1945,6 +1438,26 @@ void setup()
   NetworkManager::init();
   NetworkManager::setWebSocketEventHandler(onWsEvent);
   LOG_INFO("Network manager initialized");
+
+  // Test debug message to verify WebSocket debug window is working
+  sendDebugMessage("=== DEBUG WINDOW TEST MESSAGE ===");
+  sendDebugMessage("If you can see this, the debug WebSocket is working!");
+  sendDebugMessage("Device IP: " + deviceIP);
+  sendDebugMessage("Current Device ID: " + String(DeviceState::getDeviceConfig().deviceId));
+
+  // *** ENHANCED DEBUG OUTPUT ***
+  Serial.println("");
+  Serial.println("████████████████████████████████████████████████");
+  Serial.println("██ SHACKMATE OUTLET READY FOR CI-V COMMANDS  ██");
+  Serial.println("████████████████████████████████████████████████");
+  Serial.println("Device IP: " + deviceIP);
+  Serial.println("Device ID: " + String(DeviceState::getDeviceConfig().deviceId));
+  Serial.println("CI-V Address: 0x" + String(getCivAddressByte(), HEX));
+  Serial.println("UDP Discovery Port: " + String(UDP_PORT));
+  Serial.println("Broadcast Filtering: " + String(CIV_ENABLE_BROADCAST_FILTERING ? "ENABLED" : "DISABLED"));
+  Serial.println("WebSocket Client Status: " + String(NetworkManager::isClientConnected() ? "CONNECTED" : "DISCONNECTED"));
+  Serial.println("████████████████████████████████████████████████");
+  Serial.println("");
 
   preferences.begin("config", false);
   tcpPort = customPortParam.getValue();
@@ -2090,286 +1603,523 @@ void setup()
       1           // Core ID: 1 (Core 0 handles main loop, Core 1 handles OTA)
   );
   Serial.println("OTA Task created on Core 1");
+
+  // -------------------------------------------------------------------------
+  // Initialize Event-Driven Webpage Update System
+  // -------------------------------------------------------------------------
+  EventManager::init();
+  Serial.println("Event-driven webpage update system initialized");
+
+  // Initialize sensor baseline values for change detection
+  lastVoltage = hlw.getVoltage() * voltageCalibrationFactor;
+  lastCurrent = getValidatedCurrent();
+  lastPower = getValidatedPower();
+  lastLux = (analogRead(PIN_LUX_ADC) / 4095.0f) * 3.3f * (1000.0f / 3.3f);
+  lastRelay1State = relay1State;
+  lastRelay2State = relay2State;
+  lastCivConnected = NetworkManager::isClientConnected();
+
+  Serial.println("Sensor baseline values initialized for event-driven updates");
+}
+
+// Timer interrupt handlers
+void IRAM_ATTR onSensorUpdateTimer();
+void IRAM_ATTR onSystemStatusTimer();
+
+// -------------------------------------------------------------------------
+// Event-Driven Update Functions
+// -------------------------------------------------------------------------
+
+// Initialize event-driven update system
+void initEventDrivenUpdates()
+{
+  EventManager::init();
+}
+
+// Check for significant sensor changes and queue events
+void checkSensorChanges()
+{
+  float voltage = hlw.getVoltage() * voltageCalibrationFactor;
+  float current = getValidatedCurrent();
+  float power = getValidatedPower();
+
+  // Read light sensor (LUX)
+  uint16_t luxRaw = analogRead(PIN_LUX_ADC);
+  float lux = (luxRaw / 4095.0f) * 3.3f * (1000.0f / 3.3f);
+
+  bool significantChange = false;
+  String changeDescription = "";
+
+  // Check for significant voltage change
+  if (abs(voltage - lastVoltage) >= VOLTAGE_CHANGE_THRESHOLD)
+  {
+    significantChange = true;
+    changeDescription += "Voltage: " + String(lastVoltage, 1) + "V → " + String(voltage, 1) + "V ";
+    lastVoltage = voltage;
+  }
+
+  // Check for significant current change
+  if (abs(current - lastCurrent) >= CURRENT_CHANGE_THRESHOLD)
+  {
+    significantChange = true;
+    changeDescription += "Current: " + String(lastCurrent, 3) + "A → " + String(current, 3) + "A ";
+    lastCurrent = current;
+  }
+
+  // Check for significant power change
+  if (abs(power - lastPower) >= POWER_CHANGE_THRESHOLD)
+  {
+    significantChange = true;
+    changeDescription += "Power: " + String(lastPower, 1) + "W → " + String(power, 1) + "W ";
+    lastPower = power;
+  }
+
+  // Check for significant lux change
+  if (abs(lux - lastLux) >= LUX_CHANGE_THRESHOLD)
+  {
+    significantChange = true;
+    changeDescription += "Lux: " + String(lastLux, 1) + " → " + String(lux, 1) + " ";
+    lastLux = lux;
+  }
+
+  if (significantChange)
+  {
+    sendDebugMessage("Event: Significant sensor change detected - " + changeDescription);
+    EventManager::queueEvent(WEB_EVENT_SENSOR_UPDATE, "");
+  }
+
+  // Always update DeviceState for consistency
+  DeviceState::updateSensorData(lux, voltage, current, power);
+}
+
+// Check for relay state changes and queue events
+void checkRelayStateChanges()
+{
+  if (relay1State != lastRelay1State || relay2State != lastRelay2State)
+  {
+    String stateChange = "Relay states changed: ";
+    if (relay1State != lastRelay1State)
+    {
+      stateChange += "Output1: " + String(lastRelay1State ? "ON" : "OFF") + " → " + String(relay1State ? "ON" : "OFF") + " ";
+    }
+    if (relay2State != lastRelay2State)
+    {
+      stateChange += "Output2: " + String(lastRelay2State ? "ON" : "OFF") + " → " + String(relay2State ? "ON" : "OFF") + " ";
+    }
+
+    sendDebugMessage("Event: " + stateChange);
+    EventManager::queueEvent(WEB_EVENT_RELAY_STATE_CHANGE, stateChange);
+
+    lastRelay1State = relay1State;
+    lastRelay2State = relay2State;
+  }
+}
+
+// Check for CI-V connection status changes
+void checkCivConnectionChanges()
+{
+  bool currentCivConnected = NetworkManager::isClientConnected();
+  if (currentCivConnected != lastCivConnected)
+  {
+    String statusChange = "CI-V connection: " + String(lastCivConnected ? "CONNECTED" : "DISCONNECTED") +
+                          " → " + String(currentCivConnected ? "CONNECTED" : "DISCONNECTED");
+
+    sendDebugMessage("Event: " + statusChange);
+    EventManager::queueEvent(WEB_EVENT_CONNECTION_STATUS_CHANGE, statusChange);
+
+    lastCivConnected = currentCivConnected;
+  }
+}
+
+// Process events and send updates to webpage
+void processWebUpdateEvents()
+{
+  EventManager::processEvents();
+}
+
+// Trigger relay state change event (call this whenever relays change)
+void triggerRelayStateChangeEvent()
+{
+  EventManager::queueEvent(WEB_EVENT_RELAY_STATE_CHANGE, "");
+}
+
+// Trigger CI-V message event
+void triggerCivMessageEvent(const String &messageInfo)
+{
+  EventManager::queueEvent(WEB_EVENT_CIV_MESSAGE, messageInfo);
+}
+
+// Trigger calibration change event
+void triggerCalibrationChangeEvent(const String &calibrationInfo)
+{
+  EventManager::queueEvent(WEB_EVENT_CALIBRATION_CHANGE, calibrationInfo);
 }
 
 // -------------------------------------------------------------------------
-// Main Loop (runs on Core 0, OTA handled separately on Core 1)
+// WebSocket Event Handler
 // -------------------------------------------------------------------------
-void loop()
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
+               void *arg, unsigned char *data, size_t len)
 {
-  // Update status LED using hardware controller
-  hardware.update();
-
-  // Debug output when in captive portal mode
-  static unsigned long lastLoopDebug = 0;
-  if (captivePortalActive && millis() - lastLoopDebug >= 1000)
+  switch (type)
   {
-    Serial.println("DEBUG: Main loop running in captive portal mode");
-    lastLoopDebug = millis();
+  case WS_EVT_CONNECT:
+  {
+    Serial.printf("WebSocket client #%u connected\n", client->id());
+
+    // Send a test debug message to verify the debug window is working
+    sendDebugMessage("*** WebSocket client connected - Debug window is working! ***");
+    sendDebugMessage("Current device ID: " + String(DeviceState::getDeviceConfig().deviceId));
+    sendDebugMessage("Current CI-V address: 0x" + String(getCivAddressByte(), HEX));
+
+    // Send initial state and status to newly connected client
+    float lux = analogRead(PIN_LUX_ADC) * (3.3f / 4095.0f);
+    float amps = getValidatedCurrent();
+    float rawV = hlw.getVoltage();
+    float volts = rawV * voltageCalibrationFactor;
+    float watts = getValidatedPower();
+    DeviceState::updateSensorData(lux, volts, amps, watts);
+
+    // Send current state (relay + labels)
+    String stateMsg = JsonBuilder::buildStateResponse();
+    client->text(stateMsg);
+
+    // Send full status (including sensors & uptime)
+    String statusMsg = JsonBuilder::buildStatusResponse();
+    client->text(statusMsg);
+
+    // Trigger connection status change event
+    triggerRelayStateChangeEvent();
   }
+  break;
 
-  // Handle OTA updates
-  ArduinoOTA.handle();
+  case WS_EVT_DISCONNECT:
+    Serial.printf("WebSocket client #%u disconnected\n", client->id());
+    break;
 
-  // Handle WebSocket events and other network tasks
-  NetworkManager::getWebSocket().cleanupClients();
-
-  // Handle network management (UDP discovery, WebSocket client, connection health)
-  NetworkManager::update();
-
-  // Track network status changes (only log when status actually changes)
-  static bool lastWsClientConnected = false;
-  static String lastConnectedServerIP = "";
-  static int lastWebClientCount = -1;
-
-  bool currentWsClientConnected = NetworkManager::isClientConnected();
-  String currentConnectedServerIP = NetworkManager::getConnectedServerIP();
-  int currentWebClientCount = NetworkManager::getWebSocket().count();
-
-  // Only log WebSocket client status changes
-  if (currentWsClientConnected != lastWsClientConnected || currentConnectedServerIP != lastConnectedServerIP)
+  case WS_EVT_DATA:
   {
-    if (currentWsClientConnected)
+    String msg = "";
+    for (size_t i = 0; i < len; i++)
     {
-      sendDebugMessage("Network Status: WebSocket client CONNECTED to " +
-                       currentConnectedServerIP + ":" +
-                       String(NetworkManager::getConnectedServerPort()));
+      msg += (char)data[i];
     }
-    else
+    msg.trim();
+
+    // Debug: Log all incoming WebSocket messages
+    sendDebugMessage("WebSocket: Received message: '" + msg + "'");
+
+    // Handle JSON commands
+    if (msg.startsWith("{"))
     {
-      if (NetworkManager::hasEverConnected())
+      sendDebugMessage("WebSocket: Processing JSON command...");
+      DynamicJsonDocument j(128);
+      DeserializationError error = deserializeJson(j, msg);
+
+      if (error)
       {
-        sendDebugMessage("Network Status: WebSocket client DISCONNECTED (last target: " +
-                         NetworkManager::getConnectedServerIP() + ":" +
-                         String(NetworkManager::getConnectedServerPort()) + ")");
+        sendDebugMessage("WebSocket: JSON parse error: " + String(error.c_str()));
       }
       else
       {
-        sendDebugMessage("Network Status: No WebSocket connections established yet - listening for UDP discovery");
-      }
-    }
-    lastWsClientConnected = currentWsClientConnected;
-    lastConnectedServerIP = currentConnectedServerIP;
-  }
+        sendDebugMessage("WebSocket: JSON parsed successfully");
 
-  // Only log web client count changes
-  if (currentWebClientCount != lastWebClientCount)
-  {
-    sendDebugMessage("Web UI Status: " + String(currentWebClientCount) + " client(s) connected to web interface");
-    lastWebClientCount = currentWebClientCount;
-  }
-
-  // Handle CI-V message processing
-  civHandler.loop();
-
-  // Handle hardware button presses with debouncing
-  unsigned long currentTime = millis();
-
-  // Button 1 handling with proper debouncing
-  {
-    bool currentButton1Reading = digitalRead(PIN_BUTTON1) == HIGH;
-
-    // If button reading changed, reset the debounce timer
-    if (currentButton1Reading != lastButton1State)
-    {
-      lastButton1Time = currentTime;
-    }
-
-    // If reading has been stable for debounce delay
-    if ((currentTime - lastButton1Time) > debounceDelay)
-    {
-      // If the button state has actually changed from stable state
-      if (currentButton1Reading != button1StateStable)
-      {
-        button1StateStable = currentButton1Reading;
-
-        // Only trigger on button press (LOW to HIGH transition)
-        if (button1StateStable)
+        // Debug: Show all JSON keys and values
+        sendDebugMessage("WebSocket: JSON keys found:");
+        for (JsonPair pair : j.as<JsonObject>())
         {
-          relay1State = !relay1State;
-          digitalWrite(PIN_RELAY1, relay1State ? HIGH : LOW);
-          digitalWrite(PIN_RELAY1_LED, relay1State ? LOW : HIGH);
-          preferences.begin("outlet", false);
-          preferences.putBool("output1", relay1State);
-          preferences.end();
+          sendDebugMessage("  Key: '" + String(pair.key().c_str()) + "', Value: '" + String(pair.value().as<String>()) + "'");
+        }
 
-          // Broadcast state change
-          String msg = "{\"type\":\"state\",\"output1State\":" + String(relay1State ? "true" : "false") +
-                       ",\"output2State\":" + String(relay2State ? "true" : "false") +
-                       ",\"label1\":\"" + String(label1Text) + "\",\"label2\":\"" + String(label2Text) +
-                       "\",\"deviceName\":\"" + String(deviceName) + "\"}";
-          NetworkManager::broadcastToWebClients(msg);
+        // Handle single-output commands
+        if (j.containsKey("command") && j.containsKey("value"))
+        {
+          const char *cmd = j["command"] | "";
+          sendDebugMessage("WebSocket: Command detected: '" + String(cmd) + "'");
+          bool value = j["value"] | false;
 
-          Serial.printf("Button 1 pressed: Relay 1 %s\n", relay1State ? "ON" : "OFF");
+          // Apply and persist new output state
+          if (strcmp(cmd, "output1") == 0)
+          {
+            relay1State = value;
+            hardware.setRelay(1, relay1State);
+            syncRelayStatesWithDeviceState(); // Ensure sync after hardware update
+            triggerRelayStateChangeEvent();
+          }
+          else if (strcmp(cmd, "output2") == 0)
+          {
+            relay2State = value;
+            hardware.setRelay(2, relay2State);
+            syncRelayStatesWithDeviceState(); // Ensure sync after hardware update
+            triggerRelayStateChangeEvent();
+          }
+          break;
+        }
+
+        // Handle device ID change command - accept both "value" and "deviceId" formats
+        if (j.containsKey("command") && strcmp(j["command"] | "", "setDeviceId") == 0)
+        {
+          uint8_t newDeviceId = 1; // Default fallback
+
+          // Check for "value" format: { "command": "setDeviceId", "value": 3 }
+          if (j.containsKey("value"))
+          {
+            newDeviceId = j["value"] | 1;
+            sendDebugMessage("WebSocket: setDeviceId command received with 'value' key, newDeviceId=" + String(newDeviceId));
+          }
+          // Check for "deviceId" format: { "command": "setDeviceId", "deviceId": 3, "civAddress": "B2" }
+          else if (j.containsKey("deviceId"))
+          {
+            newDeviceId = j["deviceId"] | 1;
+            sendDebugMessage("WebSocket: setDeviceId command received with 'deviceId' key, newDeviceId=" + String(newDeviceId));
+          }
+          else
+          {
+            sendDebugMessage("WebSocket: setDeviceId command missing both 'value' and 'deviceId' keys - ignoring");
+            break;
+          }
+
+          sendDebugMessage("WebSocket: Valid range is " + String(MIN_DEVICE_ID) + " to " + String(MAX_DEVICE_ID));
+
+          if (newDeviceId >= MIN_DEVICE_ID && newDeviceId <= MAX_DEVICE_ID)
+          {
+            sendDebugMessage("WebSocket: Changing device ID from " + String(deviceId) + " to " + String(newDeviceId));
+
+            // Update device ID and CI-V address
+            DeviceState::setDeviceId(newDeviceId);
+            deviceId = newDeviceId;
+
+            // Update local civAddress variable
+            uint8_t newCivAddr = getCivAddressByte();
+            civAddress = String(newCivAddr, HEX);
+            civAddress.toUpperCase();
+
+            sendDebugMessage("WebSocket: Device ID updated to " + String(deviceId) + ", CI-V address now: 0x" + civAddress);
+
+            // Send confirmation response
+            String response = "Device ID changed to " + String(newDeviceId) + ", CI-V address: 0x" + civAddress + ". Change is effective immediately.";
+            client->text(JsonBuilder::buildInfoResponse(response));
+
+            // Trigger status update to refresh web clients with new device info
+            triggerRelayStateChangeEvent();
+          }
+          else
+          {
+            String errorMsg = "Invalid device ID " + String(newDeviceId) + ". Must be between " + String(MIN_DEVICE_ID) + " and " + String(MAX_DEVICE_ID);
+            sendDebugMessage("WebSocket: " + errorMsg);
+            client->text(JsonBuilder::buildInfoResponse(errorMsg));
+          }
+          break;
+        }
+
+        // Handle reboot command
+        if (j.containsKey("command") && strcmp(j["command"] | "", "reboot") == 0)
+        {
+          sendDebugMessage("WebSocket: Reboot command received");
+          client->text(JsonBuilder::buildInfoResponse("Rebooting device..."));
+          delay(250);
+          ESP.restart();
+          break;
+        }
+
+        // Handle commands with just "command" key (no "value") - catch-all for unhandled commands
+        if (j.containsKey("command") && !j.containsKey("value"))
+        {
+          const char *cmd = j["command"] | "";
+          sendDebugMessage("WebSocket: Unhandled command (no value) detected: '" + String(cmd) + "'");
         }
       }
     }
-
-    lastButton1State = currentButton1Reading;
+    // Handle CI-V hex messages (non-JSON)
+    else if (!msg.startsWith("{") && msg.length() > 0)
+    {
+      sendDebugMessage("WebSocket: Processing CI-V hex message: " + msg);
+      handleReceivedCivMessage(msg);
+    }
   }
+  break;
 
-  // Button 2 handling with proper debouncing
-  {
-    bool currentButton2Reading = digitalRead(PIN_BUTTON2) == HIGH;
-
-    // If button reading changed, reset the debounce timer
-    if (currentButton2Reading != lastButton2State)
-    {
-      lastButton2Time = currentTime;
-    }
-
-    // If reading has been stable for debounce delay
-    if ((currentTime - lastButton2Time) > debounceDelay)
-    {
-      // If the button state has actually changed from stable state
-      if (currentButton2Reading != button2StateStable)
-      {
-        button2StateStable = currentButton2Reading;
-
-        // Only trigger on button press (LOW to HIGH transition)
-        if (button2StateStable)
-        {
-          relay2State = !relay2State;
-          digitalWrite(PIN_RELAY2, relay2State ? HIGH : LOW);
-          digitalWrite(PIN_RELAY2_LED, relay2State ? LOW : HIGH);
-          preferences.begin("outlet", false);
-          preferences.putBool("output2", relay2State);
-          preferences.end();
-
-          // Broadcast state change
-          String msg = "{\"type\":\"state\",\"output1State\":" + String(relay1State ? "true" : "false") +
-                       ",\"output2State\":" + String(relay2State ? "true" : "false") +
-                       ",\"label1\":\"" + String(label1Text) + "\",\"label2\":\"" + String(label2Text) +
-                       "\",\"deviceName\":\"" + String(deviceName) + "\"}";
-          NetworkManager::broadcastToWebClients(msg);
-
-          Serial.printf("Button 2 pressed: Relay 2 %s\n", relay2State ? "ON" : "OFF");
-        }
-      }
-    }
-
-    lastButton2State = currentButton2Reading;
+  default:
+    break;
   }
-
-  // Periodic sensor reading and status broadcast
-  static unsigned long lastSensorRead = 0;
-  static unsigned long lastStatusBroadcast = 0;
-
-  if (currentTime - lastSensorRead >= SENSOR_UPDATE_INTERVAL_MS)
-  {
-    lastSensorRead = currentTime;
-
-    // Read sensors and broadcast status
-    float voltage = hlw.getVoltage();
-    float current = getValidatedCurrent();
-    float power = getValidatedPower();
-
-    // Read light sensor (LUX) - convert ADC reading to voltage
-    uint16_t luxRaw = analogRead(PIN_LUX_ADC);
-    float luxVoltage = (luxRaw / 4095.0) * 3.3; // Convert to voltage (0-3.3V)
-
-    // Convert to lux value
-    float lux = luxVoltage * (1000.0 / 3.3); // Simple conversion, adjust as needed
-
-    // Get current time
-    struct tm timeinfo;
-    char timeStr[64];
-    if (getLocalTime(&timeinfo))
-    {
-      strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
-    }
-    else
-    {
-      strcpy(timeStr, "TIME_NOT_SET");
-    }
-
-    // Create comprehensive status message
-    String statusMsg = "{\"type\":\"status\","
-                       "\"volts\":" +
-                       String(voltage, 1) + ","
-                                            "\"amps\":" +
-                       String(current, 2) + ","
-                                            "\"watts\":" +
-                       String(power, 0) + ","
-                                          "\"lux\":" +
-                       String(lux, 1) + ","
-                                        "\"timestamp\":\"" +
-                       String(timeStr) + "\","
-                                         "\"output1State\":" +
-                       String(relay1State ? "true" : "false") + ","
-                                                                "\"output2State\":" +
-                       String(relay2State ? "true" : "false") + ","
-                                                                "\"label1\":\"" +
-                       String(label1Text) + "\","
-                                            "\"label2\":\"" +
-                       String(label2Text) + "\","
-                                            "\"civServerConnected\":" +
-                       String(NetworkManager::isClientConnected() ? "true" : "false") + ","
-                                                                                        "\"civServerEverConnected\":" +
-                       String(NetworkManager::hasEverConnected() ? "true" : "false") + ","
-                                                                                       "\"civServerIP\":\"" +
-                       NetworkManager::getConnectedServerIP() + "\","
-                                                                "\"civServerPort\":" +
-                       String(NetworkManager::getConnectedServerPort()) + ","
-                                                                          "\"uptime\":\"" +
-                       getUptime() + "\","
-                                     "\"chipId\":\"" +
-                       getChipID() + "\","
-                                     "\"chipRevision\":" +
-                       String(getChipRevision()) + ","
-                                                   "\"version\":\"" +
-                       String(VERSION) + "\","
-                                         "\"udpPort\":" +
-                       String(UDP_PORT) + ","
-                                          "\"flashTotal\":" +
-                       String(getFlashSize()) + ","
-                                                "\"psramSize\":" +
-                       String(getPsramSize()) + ","
-                                                "\"cpuFreq\":" +
-                       String(getCpuFrequency()) + ","
-                                                   "\"freeHeap\":" +
-                       String(getFreeHeap()) + ","
-                                               "\"memUsed\":" +
-                       String(getTotalHeap() - getFreeHeap()) + ","
-                                                                "\"memTotal\":" +
-                       String(getTotalHeap()) + ","
-                                                "\"temperatureC\":" +
-                       String(readInternalTemperature(), 1) + ","
-                                                              "\"temperatureF\":" +
-                       String(readInternalTemperature() * 9.0 / 5.0 + 32.0, 1) + ","
-                                                                                 "\"rebootCount\":" +
-                       String(rebootCounter) + ","
-                                               "\"deviceId\":" +
-                       String(deviceId) + ","
-                                          "\"civAddress\":\"" +
-                       civAddress + "\","
-                                    "\"deviceName\":\"" +
-                       String(deviceName) + "\"}";
-
-    NetworkManager::broadcastToWebClients(statusMsg);
-
-    Serial.printf("Status: %.1fV %.2fA %.0fW %.1flux %s\n",
-                  voltage, current, power, lux, timeStr);
-  }
-
-  // Small delay to prevent overwhelming the system
-  delay(50);
 }
 
 // -------------------------------------------------------------------------
-// System Info Functions
+// Main Loop - Event-Driven Processing
 // -------------------------------------------------------------------------
+
+void loop()
+{
+  // Handle OTA updates
+  ArduinoOTA.handle();
+
+  // Reset watchdog timer to prevent resets during normal operation
+  esp_task_wdt_reset();
+
+  // Update network manager (handles WebSocket client, UDP discovery) - CRITICAL!
+  NetworkManager::update();
+
+  // Process event-driven sensor updates (triggered by hardware timer)
+  if (EventManager::isSensorUpdateTriggered())
+  {
+    EventManager::clearSensorUpdateFlag();
+    checkSensorChanges();
+    checkRelayStateChanges();
+    checkCivConnectionChanges();
+  }
+
+  // Process event-driven system status updates (triggered by hardware timer)
+  if (EventManager::isSystemStatusTriggered())
+  {
+    EventManager::clearSystemStatusFlag();
+    EventManager::queueEvent(WEB_EVENT_SYSTEM_STATUS, "");
+  }
+
+  // Enhanced debug logging for WebSocket connection status (reduced frequency when connected)
+  static unsigned long lastWebSocketDebug = 0;
+  static bool lastConnectionState = false;
+  bool isConnected = NetworkManager::isClientConnected();
+
+  // Log immediately when connection state changes, or periodically if disconnected
+  bool shouldLog = (isConnected != lastConnectionState) ||
+                   (!isConnected && (millis() - lastWebSocketDebug >= 30000)) ||
+                   (isConnected && (millis() - lastWebSocketDebug >= 120000)); // 2 minutes when connected
+
+  if (shouldLog)
+  {
+    sendDebugMessage("=== WebSocket Connection Status ===");
+    sendDebugMessage("Connected to server: " + String(isConnected ? "YES" : "NO"));
+    if (isConnected)
+    {
+      sendDebugMessage("Ready to receive CI-V commands at address 0x" + String(getCivAddressByte(), HEX));
+    }
+    else
+    {
+      sendDebugMessage("WARNING: Not connected to CI-V server - will not receive commands");
+    }
+    sendDebugMessage("Device IP: " + WiFi.localIP().toString());
+    sendDebugMessage("================================");
+    lastWebSocketDebug = millis();
+    lastConnectionState = isConnected;
+  }
+
+  // Network discovery status - only log when disconnected or occasionally when connected
+  static unsigned long lastNetworkDebug = 0;
+  if ((!isConnected && (millis() - lastNetworkDebug >= 30000)) ||
+      (isConnected && (millis() - lastNetworkDebug >= 300000))) // 5 minutes when connected
+  {
+    if (!isConnected)
+    {
+      sendDebugMessage("=== Network Discovery Status ===");
+      sendDebugMessage("Listening for UDP discovery on port " + String(UDP_PORT));
+      sendDebugMessage("Looking for 'ShackMate,IP,Port' messages");
+      sendDebugMessage("Will auto-connect to discovered CI-V server");
+      sendDebugMessage("==============================");
+    }
+    lastNetworkDebug = millis();
+  }
+
+  // Check for button presses using hardware controller
+  if (hardware.checkButton1Pressed())
+  {
+    relay1State = !relay1State; // Toggle relay 1
+    hardware.setRelay(1, relay1State);
+    syncRelayStatesWithDeviceState(); // Ensure sync after hardware update
+    sendDebugMessage("Button 1 pressed - toggled Outlet 1 to " + String(relay1State ? "ON" : "OFF"));
+    triggerRelayStateChangeEvent();
+  }
+
+  if (hardware.checkButton2Pressed())
+  {
+    relay2State = !relay2State; // Toggle relay 2
+    hardware.setRelay(2, relay2State);
+    syncRelayStatesWithDeviceState(); // Ensure sync after hardware update
+    sendDebugMessage("Button 2 pressed - toggled Outlet 2 to " + String(relay2State ? "ON" : "OFF"));
+    triggerRelayStateChangeEvent();
+  }
+
+  // Process web update events and broadcast to clients
+  // Process events using EventManager
+  EventManager::processEvents();
+
+  // Small delay to prevent tight loop CPU usage
+  delay(10);
+}
+
+// -------------------------------------------------------------------------
+// File Loading and Template Processing Functions
+// -------------------------------------------------------------------------
+
+String loadFile(const char *path)
+{
+  File file = SPIFFS.open(path, "r");
+  if (!file)
+  {
+    Serial.println("Failed to open file: " + String(path));
+    return "";
+  }
+
+  String content = file.readString();
+  file.close();
+
+  Serial.println("Loaded file: " + String(path) + " (" + String(content.length()) + " bytes)");
+  return content;
+}
+
+String processTemplate(String tmpl)
+{
+  // Replace template variables with actual values
+  tmpl.replace("%PROJECT_NAME%", "ShackMate Outlet");
+  tmpl.replace("%DEVICE_NAME%", String(deviceName));
+  tmpl.replace("%DEVICE_IP%", deviceIP);
+  tmpl.replace("%WEBSOCKET_PORT%", wsPortStr);
+  tmpl.replace("%UPTIME%", getUptime());
+  tmpl.replace("%REBOOT_COUNT%", String(rebootCounter));
+  tmpl.replace("%CHIP_ID%", getChipID());
+  tmpl.replace("%FREE_HEAP%", String(ESP.getFreeHeap()));
+  tmpl.replace("%VERSION%", String(VERSION));
+  tmpl.replace("%LABEL1%", String(label1Text));
+  tmpl.replace("%LABEL2%", String(label2Text));
+  tmpl.replace("%RELAY1_STATE%", relay1State ? "true" : "false");
+  tmpl.replace("%RELAY2_STATE%", relay2State ? "true" : "false");
+  tmpl.replace("%CIV_ADDRESS%", civAddress);
+  tmpl.replace("%DEVICE_ID%", String(deviceId));
+
+  return tmpl;
+}
+
+// -------------------------------------------------------------------------
+// Utility Functions
+// -------------------------------------------------------------------------
+
 String getUptime()
 {
-  return DeviceState::getUptime();
+  unsigned long uptimeMs = millis();
+  unsigned long seconds = uptimeMs / 1000;
+  unsigned long minutes = seconds / 60;
+  unsigned long hours = minutes / 60;
+  unsigned long days = hours / 24;
+
+  seconds %= 60;
+  minutes %= 60;
+  hours %= 24;
+
+  String uptime = "";
+  if (days > 0)
+    uptime += String(days) + "d ";
+  if (hours > 0)
+    uptime += String(hours) + "h ";
+  if (minutes > 0)
+    uptime += String(minutes) + "m ";
+  uptime += String(seconds) + "s";
+
+  return uptime;
 }
 
 String getChipID()
 {
   uint64_t chipid = ESP.getEfuseMac();
-  char idString[17];
-  sprintf(idString, "%04X%08X", (uint16_t)(chipid >> 32), (uint32_t)chipid);
-  return String(idString);
+  return String((uint32_t)(chipid >> 32), HEX) + String((uint32_t)chipid, HEX);
 }
 
 int getChipRevision()
@@ -2384,7 +2134,7 @@ uint32_t getFlashSize()
 
 uint32_t getPsramSize()
 {
-  return psramFound() ? ESP.getPsramSize() : 0;
+  return ESP.getPsramSize();
 }
 
 int getCpuFrequency()
@@ -2399,7 +2149,7 @@ uint32_t getFreeHeap()
 
 uint32_t getTotalHeap()
 {
-  return heap_caps_get_total_size(MALLOC_CAP_8BIT);
+  return ESP.getHeapSize();
 }
 
 uint32_t getSketchSize()
@@ -2414,72 +2164,24 @@ uint32_t getFreeSketchSpace()
 
 float readInternalTemperature()
 {
-  return 42.0; // Dummy value; use an external sensor for real measurements.
+  // ESP32 internal temperature sensor (approximate)
+  return temperatureRead();
 }
 
 // -------------------------------------------------------------------------
-// Template Functions
+// Relay State Synchronization Helper Function
 // -------------------------------------------------------------------------
-String loadFile(const char *path)
+
+/**
+ * @brief Synchronize global relay state variables with DeviceState
+ *
+ * This ensures that the global relay1State and relay2State variables
+ * are always in sync with the DeviceState. Should be called after
+ * any operation that might modify DeviceState independently.
+ */
+void syncRelayStatesWithDeviceState()
 {
-  File file = SPIFFS.open(path, "r");
-  if (!file || file.isDirectory())
-  {
-    Serial.printf("Failed to open file: %s\n", path);
-    return "";
-  }
-  String content;
-  while (file.available())
-  {
-    content += char(file.read());
-  }
-  file.close();
-  return content;
-}
-
-String processTemplate(String tmpl)
-{
-  // Use uptime instead of timestamp
-  String uptimeStr = getUptime();
-
-  tmpl.replace("%PROJECT_NAME%", String(NAME));
-  tmpl.replace("%TIME%", uptimeStr);
-  tmpl.replace("%IP%", deviceIP);
-  tmpl.replace("%WEBSOCKET_PORT%", wsPortStr);
-  tmpl.replace("%UDP_PORT%", String(UDP_PORT));
-  tmpl.replace("%VERSION%", VERSION);
-
-  uint32_t totalMem = getTotalHeap();
-  uint32_t freeMem = getFreeHeap();
-  uint32_t usedMem = totalMem - freeMem;
-  tmpl.replace("%MEM_TOTAL%", String(totalMem / 1024) + " KB");
-  tmpl.replace("%MEM_USED%", String(usedMem / 1024) + " KB");
-  tmpl.replace("%MEM_FREE%", String(freeMem / 1024) + " KB");
-
-  uint32_t flashTotal = getFlashSize();
-  uint32_t sketchSize = getSketchSize();
-  tmpl.replace("%FLASH_TOTAL%", String(flashTotal / 1024) + " KB");
-  tmpl.replace("%FLASH_USED%", String(sketchSize / 1024) + " KB");
-  tmpl.replace("%FLASH_FREE%", String((flashTotal - sketchSize) / 1024) + " KB");
-
-  preferences.begin("config", true);
-  preferences.end();
-
-  tmpl.replace("%UPTIME%", getUptime());
-  tmpl.replace("%CHIP_ID%", getChipID());
-  tmpl.replace("%CHIP_REV%", String(getChipRevision()));
-  tmpl.replace("%PSRAM_SIZE%", String(getPsramSize()));
-  tmpl.replace("%CPU_FREQ%", String(getCpuFrequency()));
-  tmpl.replace("%FREE_HEAP%", String(getFreeHeap()));
-
-  uint32_t totalSketch = sketchSize + getFreeSketchSpace();
-  tmpl.replace("%SKETCH_USED%", String(sketchSize));
-  tmpl.replace("%SKETCH_TOTAL%", String(totalSketch));
-
-  float tempC = readInternalTemperature();
-  float tempF = (tempC * 1.8) + 32.0;
-  tmpl.replace("%TEMPERATURE_C%", String(tempC, 2));
-  tmpl.replace("%TEMPERATURE_F%", String(tempF, 2));
-
-  return tmpl;
+  const auto &relayState = DeviceState::getRelayState();
+  relay1State = relayState.relay1;
+  relay2State = relayState.relay2;
 }

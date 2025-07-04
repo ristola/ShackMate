@@ -41,6 +41,9 @@ void DeviceState::loadFromPreferences()
     deviceConfig.tcpPort = prefs.getString("tcp_port", "4000");
     prefs.end();
 
+    Serial.println("NVS LOAD: deviceId=" + String(deviceConfig.deviceId) + ", civAddress=" + deviceConfig.civAddress);
+    Serial.println("NVS LOAD: DEFAULT_DEVICE_ID=" + String(DEFAULT_DEVICE_ID) + ", DEFAULT_CIV_ADDRESS=" + String(DEFAULT_CIV_ADDRESS));
+
     // Load system data
     prefs.begin("system", true);
     deviceConfig.rebootCounter = prefs.getUInt("rebootCount", 0);
@@ -124,18 +127,51 @@ void DeviceState::setRelayLabel(int relayNum, const String &label)
 
 void DeviceState::setDeviceId(uint8_t id)
 {
+    Serial.println("DeviceState::setDeviceId() called with id=" + String(id));
+    Serial.println("Valid range: " + String(MIN_DEVICE_ID) + " to " + String(MAX_DEVICE_ID));
+
     if (id >= MIN_DEVICE_ID && id <= MAX_DEVICE_ID)
     {
+        Serial.println("ID " + String(id) + " is within valid range, updating...");
         deviceConfig.deviceId = id;
-        deviceConfig.civAddress = "B" + String(id - 1);
+
+        // Calculate the correct CI-V address: 0xB0 + (deviceId - 1)
+        uint8_t civAddrByte = 0xB0 + (id - 1);
+        deviceConfig.civAddress = String(civAddrByte, HEX);
+        deviceConfig.civAddress.toUpperCase();
+
+        Serial.println("Calculated CI-V address: 0x" + deviceConfig.civAddress);
 
         Preferences prefs;
-        prefs.begin("config", false);
-        prefs.putUChar("deviceId", id);
-        prefs.putString("civAddress", deviceConfig.civAddress);
-        prefs.end();
+        bool prefsOpened = prefs.begin("config", false);
+        Serial.println("Preferences.begin('config', false) returned: " + String(prefsOpened ? "SUCCESS" : "FAILED"));
 
-        LOG_INFO("Device ID set to " + String(id) + " (CIV: " + deviceConfig.civAddress + ")");
+        if (prefsOpened)
+        {
+            size_t written1 = prefs.putUChar("deviceId", id);
+            size_t written2 = prefs.putString("civAddress", deviceConfig.civAddress);
+            prefs.end();
+
+            Serial.println("NVS write results: deviceId=" + String(written1) + " bytes, civAddress=" + String(written2) + " bytes");
+
+            // Verify the write by reading it back
+            prefs.begin("config", true);
+            uint8_t readBackId = prefs.getUChar("deviceId", 0);
+            String readBackAddr = prefs.getString("civAddress", "");
+            prefs.end();
+
+            Serial.println("Verification read: deviceId=" + String(readBackId) + ", civAddress=" + readBackAddr);
+        }
+        else
+        {
+            Serial.println("ERROR: Failed to open NVS preferences for writing!");
+        }
+
+        LOG_INFO("Device ID set to " + String(id) + " (CIV: 0x" + deviceConfig.civAddress + ")");
+    }
+    else
+    {
+        Serial.println("ERROR: Device ID " + String(id) + " is outside valid range " + String(MIN_DEVICE_ID) + "-" + String(MAX_DEVICE_ID));
     }
 }
 

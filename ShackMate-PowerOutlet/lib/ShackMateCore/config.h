@@ -46,6 +46,12 @@ static constexpr size_t MAX_DEVICE_NAME_LENGTH = 64;
 static constexpr size_t MAX_LABEL_LENGTH = 32;
 static constexpr size_t MAX_CIV_MESSAGE_LENGTH = 128;
 
+// Sensor Change Detection Thresholds
+static constexpr float VOLTAGE_CHANGE_THRESHOLD = 1.0f;  // 1V
+static constexpr float CURRENT_CHANGE_THRESHOLD = 0.05f; // 50mA
+static constexpr float POWER_CHANGE_THRESHOLD = 5.0f;    // 5W
+static constexpr float LUX_CHANGE_THRESHOLD = 10.0f;     // 10 lux units
+
 // Device Configuration
 #define MIN_DEVICE_ID 1
 #define MAX_DEVICE_ID 4
@@ -57,3 +63,7 @@ static constexpr size_t MAX_CIV_MESSAGE_LENGTH = 128;
 #define CIV_MODEL_ATOM_POWER_OUTLET 0x00   // 00 = ATOM Power Outlet
 #define CIV_MODEL_WYZE_OUTDOOR_OUTLET 0x01 // 01 = Wyze Outdoor Power Outlet
 #define DEFAULT_CIV_MODEL_TYPE CIV_MODEL_WYZE_OUTDOOR_OUTLET
+
+// CI-V Address Filtering Configuration
+#define CIV_ALLOWED_BROADCAST_SOURCE 0xEE    // Only accept broadcast messages from this address
+#define CIV_ENABLE_BROADCAST_FILTERING false // Set to false to disable broadcast filtering

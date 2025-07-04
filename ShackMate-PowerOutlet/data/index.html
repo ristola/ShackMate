@@ -229,25 +229,29 @@
       
       <hr style="border-color: #555; margin: 20px 0;">
       
-      <h3 style="margin-bottom: 16px;">System Actions</h3>
+      <h3 style="margin-bottom: 16px;">Device Configuration</h3>
       
       <!-- Device ID Configuration -->
       <div style="margin: 20px 0; text-align: left; padding: 0 20px;">
         <label style="display: block; margin-bottom: 8px;">
-          <span style="font-size: 16px;">Device ID:</span>
+          <span style="font-size: 16px;">Device Number:</span>
           <input type="number" id="device-id-input" min="1" max="4" value="1" 
                  style="margin-left: 10px; width: 60px; padding: 4px; border: 1px solid #555; 
                         background: #222; color: #fff; border-radius: 3px;">
         </label>
         <div style="margin-top: 5px; color: #aaa; font-size: 12px;">
-          CIV Address: <span id="civ-address-display">B0</span> (ID 1-4 maps to B0-B3)
+          CI-V Address: <span id="civ-address-display">B0</span> (Number 1-4 maps to B0-B3)
         </div>
       </div>
+      
+      <hr style="border-color: #555; margin: 20px 0;">
+      
+      <h3 style="margin-bottom: 16px;">System Actions</h3>
       
       <button id="btn-reboot" style="margin:16px 0; width:90%; font-size:18px;">Reboot</button><br/>
       <button id="btn-restore" style="margin:8px 0; width:90%; font-size:18px;">Erase WiFi Credentials</button>
       <div style="margin-top:20px; color:#aaa; font-size:13px;">
-        Erase WiFi credentials and reboot (Device ID preserved).
+        Erase WiFi credentials and reboot (Device Number preserved).
       </div>
     </div>
   </div>
@@ -492,7 +496,7 @@
     const deviceIdInput = document.getElementById('device-id-input');
     const civAddressDisplay = document.getElementById('civ-address-display');
 
-    // CIV Address mapping: Device ID 1-4 maps to B0-B3
+    // CI-V Address mapping: Device Number 1-4 maps to B0-B3
     let civAddress = 'B0'; // Default CIV address
 
     function updateCivAddress() {
@@ -591,7 +595,7 @@
     });
 
     btnRestore.addEventListener('click', () => {
-      if (confirm("Erase WiFi credentials and reboot (Device ID preserved)?")) {
+      if (confirm("Erase WiFi credentials and reboot (Device Number preserved)?")) {
         if (socket && socket.readyState === 1) {
           socket.send(JSON.stringify({ command: "restore" }));
         } else {
