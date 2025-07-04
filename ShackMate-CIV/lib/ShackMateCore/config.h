@@ -12,11 +12,7 @@
 #define WEBSOCKET_PORT 4000
 #define HTTP_PORT 80
 
-// Hardware Pin Definitions
-#define PIN_STATUS_LED 5 // Inverted logic (LOW=ON, HIGH=OFF)
-
 // Timing Constants
-static constexpr uint32_t STATUS_LED_BLINK_INTERVAL_MS = 250; // 250ms
 static constexpr unsigned long CONNECTION_COOLDOWN_MS = 10000;
 static constexpr unsigned long WEBSOCKET_TIMEOUT_MS = 60000;
 static constexpr unsigned long PING_INTERVAL_MS = 30000;
