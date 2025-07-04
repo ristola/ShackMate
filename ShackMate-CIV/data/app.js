@@ -128,22 +128,22 @@ function updateDashboard(data) {
     }
     
     // Special handling for specific fields
-    if (data.ws_quality !== undefined) {
+    if (data['ws-connection-quality'] !== undefined) {
         const qualityElement = document.getElementById('ws-quality');
         if (qualityElement) {
             const valueSpan = qualityElement.querySelector('.value');
             if (valueSpan) {
-                valueSpan.textContent = data.ws_quality;
+                valueSpan.textContent = data['ws-connection-quality'];
             }
         }
     }
     
-    if (data.ws_ping_rtt !== undefined) {
+    if (data['ws-ping-rtt'] !== undefined) {
         const rttElement = document.getElementById('ws-ping-rtt');
         if (rttElement) {
             const valueSpan = rttElement.querySelector('.value');
             if (valueSpan) {
-                valueSpan.textContent = data.ws_ping_rtt;
+                valueSpan.textContent = data['ws-ping-rtt'];
             }
         }
     }

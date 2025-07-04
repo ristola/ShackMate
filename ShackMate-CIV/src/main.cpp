@@ -665,11 +665,12 @@ void broadcastStatus()
 
   // WebSocket reliability metrics
   const auto &ws_metrics = DeviceState::getWebSocketMetrics();
-  doc["ws_ping_rtt"] = ws_metrics.ping_rtt;
-  doc["ws_connection_quality"] = ws_metrics.connection_quality;
-  doc["ws_total_disconnects"] = ws_metrics.total_disconnects;
-  doc["ws_messages_sent"] = ws_metrics.messages_sent;
-  doc["ws_rate_limited"] = ws_metrics.messages_rate_limited;
+  doc["ws-ping-rtt"] = ws_metrics.ping_rtt;
+  doc["ws-connection-quality"] = ws_metrics.connection_quality;
+  doc["ws-disconnects"] = ws_metrics.disconnects;
+  doc["ws-reconnects"] = ws_metrics.reconnects;
+  doc["ws-messages-sent"] = ws_metrics.messages_sent;
+  doc["ws-rate-limited"] = ws_metrics.messages_rate_limited;
   doc["ws_reconnect_attempts"] = ws_metrics.reconnect_attempts;
 
   doc["ws_status_updated"] = millis();
@@ -695,6 +696,7 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   {
     wsConnectPending = false;
     auto &ws_metrics = DeviceState::getWebSocketMetrics();
+    ws_metrics.reconnects++;                  // Increment reconnect counter
     ws_metrics.reconnect_attempts = 0;        // Reset reconnection counter on successful connect
     ws_metrics.last_pong_received = millis(); // Initialize pong timestamp
     DeviceState::updateWebSocketMetrics(ws_metrics);
@@ -713,6 +715,7 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   {
     wsConnectPending = false;
     auto &ws_metrics = DeviceState::getWebSocketMetrics();
+    ws_metrics.disconnects++;                // Increment disconnect counter
     ws_metrics.total_disconnects++;
     ws_metrics.ping_pending = false;
     DeviceState::updateWebSocketMetrics(ws_metrics);
@@ -900,11 +903,12 @@ void webuiEventTask(void *parameter)
 
       // WebSocket reliability metrics
       const auto &ws_metrics = DeviceState::getWebSocketMetrics();
-      doc["ws_ping_rtt"] = ws_metrics.ping_rtt;
-      doc["ws_connection_quality"] = ws_metrics.connection_quality;
-      doc["ws_total_disconnects"] = ws_metrics.total_disconnects;
-      doc["ws_messages_sent"] = ws_metrics.messages_sent;
-      doc["ws_rate_limited"] = ws_metrics.messages_rate_limited;
+      doc["ws-ping-rtt"] = ws_metrics.ping_rtt;
+      doc["ws-connection-quality"] = ws_metrics.connection_quality;
+      doc["ws-disconnects"] = ws_metrics.disconnects;
+      doc["ws-reconnects"] = ws_metrics.reconnects;
+      doc["ws-messages-sent"] = ws_metrics.messages_sent;
+      doc["ws-rate-limited"] = ws_metrics.messages_rate_limited;
       doc["ws_reconnect_attempts"] = ws_metrics.reconnect_attempts;
 
       String json;
@@ -921,11 +925,12 @@ void webuiEventTask(void *parameter)
       doc["ws_server_port"] = lastDiscoveredPort.length() > 0 ? lastDiscoveredPort : "";
 
       // Include connection quality in status updates
-      doc["ws_ping_rtt"] = ws_metrics.ping_rtt;
-      doc["ws_connection_quality"] = ws_metrics.connection_quality;
-      doc["ws_total_disconnects"] = ws_metrics.total_disconnects;
-      doc["ws_messages_sent"] = ws_metrics.messages_sent;
-      doc["ws_rate_limited"] = ws_metrics.messages_rate_limited;
+      doc["ws-ping-rtt"] = ws_metrics.ping_rtt;
+      doc["ws-connection-quality"] = ws_metrics.connection_quality;
+      doc["ws-disconnects"] = ws_metrics.disconnects;
+      doc["ws-reconnects"] = ws_metrics.reconnects;
+      doc["ws-messages-sent"] = ws_metrics.messages_sent;
+      doc["ws-rate-limited"] = ws_metrics.messages_rate_limited;
       doc["ws_reconnect_attempts"] = ws_metrics.reconnect_attempts;
 
       String json;
