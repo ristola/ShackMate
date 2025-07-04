@@ -139,9 +139,6 @@ Serial 2   GPIO39, GPIO38  User / Free   Yes (I2C pins)
 #include <deque>
 #include "LittleFS.h"
 
-// WiFiManager includes last to avoid HTTP method conflicts
-// #include <WiFiManager.h>  // Temporarily disabled due to HTTP method conflicts
-
 struct MsgCacheEntry
 {
   String hex;
