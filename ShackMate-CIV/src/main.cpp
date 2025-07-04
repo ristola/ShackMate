@@ -477,11 +477,24 @@ void calculateConnectionQuality()
 void attemptWebSocketReconnection()
 {
   auto &ws_metrics = DeviceState::getWebSocketMetrics();
-  if (ws_metrics.reconnect_attempts < WS_MAX_RECONNECT_ATTEMPTS)
+
+  // If WS_MAX_RECONNECT_ATTEMPTS is 0, allow unlimited attempts
+  bool unlimitedAttempts = (WS_MAX_RECONNECT_ATTEMPTS == 0);
+
+  if (unlimitedAttempts || ws_metrics.reconnect_attempts < WS_MAX_RECONNECT_ATTEMPTS)
   {
     unsigned long delay_ms = WS_RECONNECT_DELAY_MS * (1 + ws_metrics.reconnect_attempts);
-    Logger::info("Attempting WebSocket reconnection in " + String(delay_ms) + "ms (attempt " +
-                 String(ws_metrics.reconnect_attempts + 1) + "/" + String(WS_MAX_RECONNECT_ATTEMPTS) + ")");
+
+    if (unlimitedAttempts)
+    {
+      Logger::info("Attempting WebSocket reconnection in " + String(delay_ms) + "ms (attempt " +
+                   String(ws_metrics.reconnect_attempts + 1) + " - unlimited)");
+    }
+    else
+    {
+      Logger::info("Attempting WebSocket reconnection in " + String(delay_ms) + "ms (attempt " +
+                   String(ws_metrics.reconnect_attempts + 1) + "/" + String(WS_MAX_RECONNECT_ATTEMPTS) + ")");
+    }
 
     delay(delay_ms);
 
@@ -715,7 +728,7 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   {
     wsConnectPending = false;
     auto &ws_metrics = DeviceState::getWebSocketMetrics();
-    ws_metrics.disconnects++;                // Increment disconnect counter
+    ws_metrics.disconnects++; // Increment disconnect counter
     ws_metrics.total_disconnects++;
     ws_metrics.ping_pending = false;
     DeviceState::updateWebSocketMetrics(ws_metrics);

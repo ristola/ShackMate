@@ -45,5 +45,5 @@ static constexpr int CACHE_MAX_SIZE = 64; // Increased from 32 to 64 for high tr
 static constexpr unsigned long WS_PING_INTERVAL_MS = 30000;
 static constexpr unsigned long WS_PING_TIMEOUT_MS = 5000;
 static constexpr unsigned long WS_RECONNECT_DELAY_MS = 2000;
-static constexpr int WS_MESSAGE_RATE_LIMIT = 50; // Increased from 50 to 100 messages/second for high CI-V traffic
-static constexpr int WS_MAX_RECONNECT_ATTEMPTS = 5;
+static constexpr int WS_MESSAGE_RATE_LIMIT = 50;    // Increased from 50 to 100 messages/second for high CI-V traffic
+static constexpr int WS_MAX_RECONNECT_ATTEMPTS = 0; // 0 = unlimited reconnection attempts
