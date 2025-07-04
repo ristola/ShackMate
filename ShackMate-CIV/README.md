@@ -1,6 +1,6 @@
 # ShackMate CI-V Controller
 
-**Version 2.00** - A robust ESP32-based CI-V to WiFi WebSocket bridge for ICOM radios
+**Version 2.1.0** - A robust ESP32-based CI-V to WiFi WebSocket bridge for ICOM radios
 
 _Copyright (c) 2025 Half Baked Circuits - N4LDR_
 
@@ -8,7 +8,9 @@ _Copyright (c) 2025 Half Baked Circuits - N4LDR_
 
 ## 🎯 Overview
 
-The ShackMate CI-V Controller is a bidirectional CI-V bridge that seamlessly connects ICOM radios to network-based control applications via WebSocket. Built on the M5Stack Atom platform (ESP32), it provides a simple, robust interface for remote radio control and monitoring.
+The ShackMate CI-V Controller is a clean, modular bidirectional CI-V bridge that seamlessly connects ICOM radios to network-based control applications via WebSocket. Built on the M5Stack Atom platform (ESP32), it provides a robust, maintainable interface for remote radio control and monitoring.
+
+This refactored version focuses exclusively on CI-V communication and WebSocket connectivity, with all relay/sensor functionality removed for a cleaner, more focused codebase.
 
 ## ✨ Key Features
 
@@ -17,8 +19,24 @@ The ShackMate CI-V Controller is a bidirectional CI-V bridge that seamlessly con
 - **Bidirectional CI-V Bridge**: Full duplex communication between CI-V radios and WebSocket clients
 - **Dual Serial Ports**: Supports two independent CI-V radio connections (Serial1 & Serial2)
 - **WebSocket Client**: Automatically discovers and connects to ShackMate WebSocket servers
-- **Minimal Echo Prevention**: Intelligent feedback prevention without complex deduplication
+- **Intelligent Frame Routing**: Smart CI-V frame filtering and auto-reply logic
 - **Multi-Client Support**: Handles multiple WebSocket clients with duplicate command prevention
+- **Modular Architecture**: Built with the consolidated ShackMateCore library for maintainability
+
+### **Enhanced CI-V Features**
+
+- **Smart Auto-Reply**: Responds to CI-V address queries (0x19 00/19 01) from broadcast address 0xEE
+- **Filtered WebSocket Forwarding**: Only forwards appropriate frames to prevent feedback loops
+- **Frame Validation**: Proper CI-V frame detection with start/end markers and checksum validation
+- **Overflow Protection**: Safe buffer handling with comprehensive overflow detection
+
+### **WebSocket Reliability & Monitoring**
+
+- **Connection Health Monitoring**: Real-time WebSocket connection quality tracking
+- **Comprehensive Metrics**: Message counts, connection time, ping response times, error rates
+- **Heartbeat/Ping System**: Automatic keep-alive mechanism with configurable intervals
+- **Dashboard Display**: All connection metrics visible in the web interface
+- **Automatic Recovery**: Fast, reliable reconnection on connection failures
 
 ### **Network & Connectivity**
 
@@ -37,10 +55,44 @@ The ShackMate CI-V Controller is a bidirectional CI-V bridge that seamlessly con
 
 ### **Robust Operation**
 
+- **ShackMateCore Library**: Consolidated core functionality (CI-V handling, device state, network management, logging)
 - **Thread-Safe Design**: Mutex-protected shared variables for multi-core operation
 - **Frame Validation**: Proper CI-V frame detection and validation
 - **Overflow Protection**: Safe buffer handling with overflow detection
 - **Connection Recovery**: Automatic reconnection on network or WebSocket failures
+- **Clean Architecture**: Removed all legacy relay/sensor code for focused CI-V operation
+
+## 🏗️ Architecture
+
+### ShackMateCore Library
+
+The project is built around the consolidated **ShackMateCore** library located in `lib/ShackMateCore/`, which provides:
+
+- **`civ_handler.h/cpp`**: Modular CI-V frame processing, routing, and auto-reply logic
+- **`device_state.h/cpp`**: Simplified device state management focused on CI-V operations and WebSocket metrics
+- **`network_manager.h/cpp`**: WiFi and network connectivity management
+- **`logger.h/cpp`**: Comprehensive logging system with configurable levels
+- **`config.h`**: Core system configuration constants
+- **`civ_config.h`**: CI-V specific configuration (addresses, timeouts, buffer sizes)
+
+### Project Structure
+
+```
+src/main.cpp              # Main application logic and WebSocket handling
+lib/ShackMateCore/        # Consolidated core library
+├── civ_handler.*         # CI-V frame processing and routing
+├── device_state.*        # Device state and WebSocket metrics
+├── network_manager.*     # Network connectivity management
+├── logger.*              # Logging system
+├── config.h              # Core configuration
+├── civ_config.h          # CI-V specific configuration
+└── library.json          # Library metadata
+data/                     # Web dashboard files
+├── index.html            # Dashboard UI
+├── app.js                # Dashboard JavaScript
+└── style.css             # Dashboard styling
+platformio.ini            # Build configuration for multiple environments
+```
 
 ## 🚀 Quick Start
 
@@ -60,11 +112,34 @@ WiFi Reset Button: GPIO39 (built-in M5Atom button)
 
 ### Installation
 
-1. Clone this repository
-2. Open in PlatformIO
-3. Build and upload to M5Stack Atom
-4. Connect to "ShackMate CI-V AP" WiFi network for initial setup
-5. Configure your WiFi credentials and CI-V baud rate
+1. **Clone this repository**
+
+   ```bash
+   git clone https://github.com/ShackMate/ShackMate-CIV.git
+   cd ShackMate-CIV
+   ```
+
+2. **Open in PlatformIO**
+
+   - Install PlatformIO IDE extension for VS Code
+   - Open project folder in PlatformIO
+
+3. **Build and upload firmware**
+
+   ```bash
+   pio run -e esp32dev -t upload
+   ```
+
+4. **Upload web dashboard files**
+
+   ```bash
+   pio run -e esp32dev -t uploadfs
+   ```
+
+5. **Initial configuration**
+   - Connect to "ShackMate CI-V AP" WiFi network
+   - Configure your WiFi credentials and CI-V baud rate
+   - Access device at assigned IP or `shackmate-civ.local`
 
 ## 🎨 Status LED Indicators
 
@@ -143,60 +218,139 @@ FE FE [TO_ADDR] [FROM_ADDR] [COMMAND] [DATA...] FD
 - PlatformIO IDE
 - ESP32 development environment
 
-### Dependencies
+### Dependencies (automatically managed by PlatformIO)
 
-- WiFiManager 2.0.17+
-- AsyncTCP 1.1.1+
-- ArduinoJson 6.18.0+
-- M5Atom library
-- FastLED
-- WebSockets 2.3.7+
+```ini
+AsyncTCP@^1.1.1                    # Async TCP library for ESP32
+ESPAsyncWebServer                  # Async web server
+ArduinoJson@^6.18.0               # JSON processing
+M5Atom                            # M5Stack Atom support
+FastLED@3.10.1                    # LED control
+WebSockets@^2.3.7                 # WebSocket client/server
+ShackMateCore                     # Local consolidated core library
+```
 
 ### Build Commands
 
 ```bash
-# Standard build
-pio run
+# Standard build and upload
+pio run -e esp32dev -t upload
 
-# OTA upload (update IP in platformio.ini)
+# Upload filesystem (web dashboard)
+pio run -e esp32dev -t uploadfs
+
+# OTA upload (update IP in platformio.ini first)
 pio run -e esp32ota -t upload
+
+# Clean build
+pio run -t clean
 
 # Serial monitor
 pio device monitor
 ```
 
+### Available PlatformIO Environments
+
+- **`esp32dev`**: Standard development build with serial upload
+- **`esp32ota`**: Over-the-air update build (configure target IP in platformio.ini)
+- **`esp32dev_debug`**: Debug build with additional logging
+- **`esp32ota_debug`**: OTA debug build
+
 ## 🔍 Troubleshooting
 
 ### Common Issues
 
-1. **Can't connect to WiFi**: Hold button for 5 seconds to reset credentials
+1. **Can't connect to WiFi**: Hold button for 5 seconds to reset credentials and restart in AP mode
 2. **No WebSocket connection**: Ensure ShackMate server is broadcasting on UDP 4210
-3. **CI-V not working**: Check baud rate and wiring connections
-4. **OTA fails**: Verify IP address in platformio.ini matches device
+3. **CI-V not working**: Check baud rate (default 19200) and verify wiring connections
+4. **OTA fails**: Verify IP address in platformio.ini matches device IP
+5. **Web dashboard not loading**: Run `pio run -e esp32dev -t uploadfs` to upload dashboard files
 
 ### Debug Information
 
-- Access web interface at device IP or `shackmate-civ.local`
-- Monitor serial output for detailed debugging information
-- Check LED status for connection state
+- **Web Interface**: Access at device IP or `shackmate-civ.local` for real-time metrics
+- **Serial Output**: Monitor with `pio device monitor` for detailed debugging information
+- **LED Status**: Check LED color for connection state (see status indicators above)
+- **WebSocket Metrics**: Dashboard shows connection health, message counts, and ping times
+
+### Configuration Reset
+
+- **WiFi Reset**: Hold M5Atom button for 5+ seconds
+- **Factory Reset**: Reflash firmware with `pio run -e esp32dev -t upload`
+- **Dashboard Restore**: Upload filesystem with `pio run -e esp32dev -t uploadfs`
 
 ## 🛡️ WebSocket Connection Robustness
 
-### Problem Analysis
+### Enhanced Reliability Features
 
-The ShackMate CI-V controller previously experienced intermittent WebSocket disconnects, especially under repeated message conditions. Root causes included aggressive library timeouts, lack of heartbeat/ping, no connection health monitoring, and slow reconnection.
+The ShackMate CI-V controller implements comprehensive WebSocket reliability monitoring and management:
 
-### Implemented Solutions
+### **Connection Health Monitoring**
 
-- **WebSocket Timeout Configuration**: Tuned timeouts and buffer sizes for stability.
-- **Heartbeat/Ping Mechanism**: Periodic ping messages from the web UI keep the connection alive and detect dead peers.
-- **Connection Health Monitoring**: The system tracks connection quality and ping response times, and exposes connection statistics in the dashboard.
-- **Improved Reconnection Logic**: Faster, more reliable reconnection attempts after disconnects.
-- **Resource Management**: Buffer sizes and message handling optimized to prevent resource exhaustion under high load.
+- **Real-time Metrics**: Tracks message counts, connection duration, ping response times
+- **Quality Assessment**: Monitors connection stability and error rates
+- **Dashboard Display**: All metrics visible in the web interface with live updates
 
-These improvements ensure robust, real-time WebSocket connectivity for all supported clients.
+### **Reliability Improvements**
 
-## 📄 License
+- **Optimized Timeouts**: Tuned WebSocket timeouts and buffer sizes for stability
+- **Heartbeat/Ping System**: Configurable ping intervals to maintain connection health
+- **Fast Reconnection**: Improved reconnection logic with exponential backoff
+- **Resource Management**: Optimized buffer handling to prevent resource exhaustion
+
+### **Problem Resolution**
+
+Previous issues with intermittent WebSocket disconnects have been resolved through:
+
+- Aggressive timeout tuning and buffer optimization
+- Implementation of keep-alive ping mechanisms
+- Connection quality monitoring and health assessment
+- Improved reconnection algorithms for faster recovery
+- Resource management optimizations to prevent connection drops
+
+### **Dashboard Metrics**
+
+The web interface displays comprehensive connection statistics:
+
+- WebSocket connection status and duration
+- Message send/receive counts and rates
+- Ping response times and connection quality indicators
+- Error counts and reconnection statistics
+- Real-time connection health assessment
+
+## � Version 2.1.0 Refactoring
+
+### Major Changes
+
+This version represents a significant refactoring focused on creating a clean, maintainable CI-V controller:
+
+### **Code Cleanup & Consolidation**
+
+- **Removed Legacy Code**: Eliminated all relay/sensor/hardware controller functionality
+- **ShackMateCore Library**: Consolidated all core functionality into a single, well-structured library
+- **Simplified DeviceState**: Streamlined to focus only on CI-V operations and WebSocket metrics
+- **Clean Architecture**: Removed unused files and dependencies for a focused codebase
+
+### **Enhanced CI-V Handling**
+
+- **Improved Frame Routing**: Fixed CI-V frame routing to only forward to correct serial ports
+- **Smart Auto-Reply**: Only responds to broadcasts from address EE for commands 19 00/19 01
+- **Filtered WebSocket Forwarding**: Prevents feedback loops while maintaining full visibility
+- **Modular CI-V Handler**: Moved CI-V processing into dedicated, reusable module
+
+### **WebSocket Reliability**
+
+- **Comprehensive Metrics**: Added all required WebSocket reliability monitoring
+- **Dashboard Integration**: Real-time display of connection health and statistics
+- **Connection Management**: Improved reliability with better error handling and recovery
+
+### **Development Improvements**
+
+- **PlatformIO Optimization**: Multiple build environments for different deployment scenarios
+- **Library Structure**: Clean separation of concerns with dedicated modules
+- **Documentation**: Updated README to reflect current architecture and capabilities
+
+## �📄 License
 
 Copyright (c) 2025 Half Baked Circuits. All rights reserved.
 

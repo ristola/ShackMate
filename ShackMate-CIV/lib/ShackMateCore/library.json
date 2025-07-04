@@ -1,11 +1,11 @@
 {
   "name": "ShackMateCore",
   "version": "1.0.0",
-  "description": "Core library for ShackMate devices - provides logging, device state management, hardware control, JSON building, and network management",
-  "keywords": ["esp32", "iot", "ham radio", "ci-v"],
+  "description": "Core library for ShackMate CI-V controllers - provides logging, device state management, CI-V handling, and network management",
+  "keywords": ["esp32", "iot", "ham radio", "ci-v", "controller"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/ShackMate/ShackMate-PowerOutlet.git"
+    "url": "https://github.com/ShackMate/ShackMate-CIV.git"
   },
   "authors": [
     {

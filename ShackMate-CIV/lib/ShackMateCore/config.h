@@ -13,28 +13,10 @@
 #define HTTP_PORT 80
 
 // Hardware Pin Definitions
-#define PIN_RELAY1 15
-#define PIN_RELAY2 32
-#define PIN_RELAY1_LED 19
-#define PIN_RELAY2_LED 16
-#define PIN_BUTTON1 18
-#define PIN_BUTTON2 17
 #define PIN_STATUS_LED 5 // Inverted logic (LOW=ON, HIGH=OFF)
 
-// Sensor Pin Definitions
-#define PIN_LUX_ADC 34
-#define PIN_HLW_CF 27
-#define PIN_HLW_CF1 26
-#define PIN_HLW_SEL 25
-
-// Hardware Calibration Constants
-static constexpr float CURRENT_RESISTOR = 0.001f;
-static constexpr float VOLTAGE_DIVIDER = 770.0f;
-
 // Timing Constants
-static constexpr uint32_t SENSOR_UPDATE_INTERVAL_MS = 10000;  // 10 seconds
 static constexpr uint32_t STATUS_LED_BLINK_INTERVAL_MS = 250; // 250ms
-static constexpr unsigned long DEBOUNCE_DELAY_MS = 50;
 static constexpr unsigned long CONNECTION_COOLDOWN_MS = 10000;
 static constexpr unsigned long WEBSOCKET_TIMEOUT_MS = 60000;
 static constexpr unsigned long PING_INTERVAL_MS = 30000;
@@ -51,6 +33,6 @@ static constexpr size_t MAX_CIV_MESSAGE_LENGTH = 128;
 #define DEFAULT_DEVICE_ID 1
 #define DEFAULT_CIV_ADDRESS "B0"
 
-// CI-V Model Type Constants (leave only for compatibility)
-#define CIV_MODEL_ATOM_POWER_OUTLET 0x00   // 00 = ATOM Power Outlet
-#define CIV_MODEL_WYZE_OUTDOOR_OUTLET 0x01 // 01 = Wyze Outdoor Power Outlet
+// CI-V Model Type Constants (for compatibility)
+#define CIV_MODEL_CIV_CONTROLLER 0x00 // 00 = CI-V Controller
+#define CIV_MODEL_CIV_GATEWAY 0x01    // 01 = CI-V Gateway

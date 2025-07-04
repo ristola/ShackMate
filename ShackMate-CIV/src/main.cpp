@@ -5,7 +5,6 @@
 #include <logger.h>
 #include <device_state.h>
 #include <network_manager.h>
-#include <json_builder.h>
 #include <civ_handler.h>
 #include <ArduinoJson.h>
 
@@ -986,7 +985,6 @@ void setup()
 
   // Initialize ShackMateCore DeviceState management
   DeviceState::init();
-  DeviceState::setBootTime(millis());
 
   // Initialize RTOS event group for WebUI updates
   webui_events = xEventGroupCreate();
@@ -1009,7 +1007,7 @@ void setup()
   LOG_INFO("        SHACKMATE CI-V CONTROLLER STARTING");
   LOG_INFO("================================================");
   LOG_INFO("Version: " + String(VERSION));
-  LOG_INFO("Boot time: " + String(DeviceState::getBootTime()) + "ms");
+  LOG_INFO("Uptime: " + DeviceState::getUptime());
   LOG_INFO("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
   LOG_INFO("Reset reason: " + String(esp_reset_reason()));
 

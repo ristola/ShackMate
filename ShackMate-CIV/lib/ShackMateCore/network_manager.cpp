@@ -1,5 +1,4 @@
 #include "network_manager.h"
-#include "json_builder.h"
 
 // Static member definitions
 WebSocketsClient NetworkManager::wsClient;
@@ -83,17 +82,17 @@ void NetworkManager::sendToServer(const String &message)
                 String modelType = "??";
                 if (message.indexOf(" 34 00 ") != -1)
                 {
-                    modelType = "00 (ATOM Power Outlet)";
+                    modelType = "00 (CI-V Controller)";
                 }
                 else if (message.indexOf(" 34 01 ") != -1)
                 {
-                    modelType = "01 (Wyze Outdoor Power Outlet)";
+                    modelType = "01 (CI-V Gateway)";
                 }
                 LOG_INFO(">>> TRANSMITTING CI-V: Model Response (34 " + modelType + ") - " + message);
             }
             else if (message.indexOf(" 35 ") != -1)
             {
-                LOG_INFO(">>> TRANSMITTING CI-V: Outlet Status Response (35) - " + message);
+                LOG_INFO(">>> TRANSMITTING CI-V: Status Response (35) - " + message);
             }
             else if (message.indexOf(" FA ") != -1)
             {
@@ -194,7 +193,7 @@ void NetworkManager::connectToShackMateServer(const String &ip, uint16_t port)
         DeviceState::setConnectionState(false, ip, port);
 
         // Broadcast discovery status to web clients
-        String statusMsg = JsonBuilder::buildStatusResponse();
+        String statusMsg = "{\"status\":\"connecting\",\"server\":\"" + ip + ":" + String(port) + "\"}";
         broadcastToWebClients(statusMsg);
 
         LOG_INFO("WebSocket client setup complete for: " + ip + ":" + String(port) + " - waiting for connection event");
@@ -274,12 +273,12 @@ void NetworkManager::onWebSocketClientEvent(WStype_t type, uint8_t *payload, siz
                 else if (message.indexOf(" 34 ") != -1)
                 {
                     LOG_INFO(">>> CI-V INCOMING: Read Model Request (34) - Should respond with device model");
-                    LOG_INFO("    Model Types: 00=ATOM Power Outlet, 01=Wyze Outdoor Power Outlet");
+                    LOG_INFO("    Model Types: 00=CI-V Controller, 01=CI-V Gateway");
                     LOG_INFO("    Raw message: " + message);
                 }
                 else if (message.indexOf(" 35 ") != -1 || message.indexOf(" 35") == message.length() - 3)
                 {
-                    LOG_INFO(">>> CI-V INCOMING: Outlet Status Request/Set (35) - Outlet control command");
+                    LOG_INFO(">>> CI-V INCOMING: Status Request/Set (35) - Control command");
                     LOG_INFO("    Raw message: " + message);
                 }
                 else if (message.indexOf("FE FE B3") != -1)
@@ -396,11 +395,12 @@ void NetworkManager::updateConnectionState(bool connected, const String &ip, uin
     DeviceState::setConnectionState(connected, connectedServerIP, connectedServerPort);
 
     // Broadcast status update to web clients
-    String statusMsg = JsonBuilder::buildStatusResponse();
+    String statusText = connected ? "connected" : "disconnected";
+    String statusMsg = "{\"status\":\"" + statusText + "\",\"server\":\"" + connectedServerIP + ":" + String(connectedServerPort) + "\"}";
     broadcastToWebClients(statusMsg);
 
-    String statusText = connected ? "CONNECTED" : "DISCONNECTED";
-    LOG_INFO("Broadcasted " + statusText + " status to web clients");
+    String logStatus = connected ? "CONNECTED" : "DISCONNECTED";
+    LOG_INFO("Broadcasted " + logStatus + " status to web clients");
 }
 
 void NetworkManager::setupUdpListener()
