@@ -56,6 +56,7 @@ Features:
 #include <system_utils.h>
 #include <web_server_manager.h>
 #include <civ_handler.h>
+#include <rate_limiter.h>
 
 // ========================= EVENT-DRIVEN UPDATE SYSTEM =========================
 
@@ -149,17 +150,6 @@ bool button2StateStable = false;
 
 // ========================= FORWARD DECLARATIONS =========================
 
-// CI-V Message Structure
-struct CivMessage
-{
-  bool valid;
-  uint8_t toAddr;
-  uint8_t fromAddr;
-  uint8_t command;
-  uint8_t subCommand;
-  std::vector<uint8_t> data;
-};
-
 // ========================= FUNCTION PROTOTYPES =========================
 
 // LED Timer Management
@@ -191,13 +181,7 @@ float getValidatedPower();
 // WebSocket and Network
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
                void *arg, unsigned char *data, size_t len);
-void sendDebugMessage(String message);
-
-// CI-V Message Handling
-CivMessage parseCivMessage(const String &hexMsg);
-bool isCivMessageForUs(const CivMessage &msg);
-bool processCivMessage(const CivMessage &msg);
-void handleReceivedCivMessage(const String &message);
+void sendDebugMessage(const String &message);
 
 // HTTP Server Handlers
 void handleRoot(AsyncWebServerRequest *request);
@@ -312,7 +296,7 @@ float getValidatedPower()
  */
 uint8_t getCivAddressByte()
 {
-  return DeviceState::getCivAddressByte();
+  return civHandler.getCivAddressByte();
 }
 
 // ========================= DEBUG HELPER FUNCTIONS =========================
@@ -325,7 +309,7 @@ uint8_t getCivAddressByte()
  *
  * @param message Debug message to send
  */
-void sendDebugMessage(String message)
+void sendDebugMessage(const String &message)
 {
   // Log to serial console via Logger system
   LOG_DEBUG(message);
@@ -337,627 +321,14 @@ void sendDebugMessage(String message)
 
 // ========================= CI-V MESSAGE HANDLING =========================
 
-// Parse CI-V message from hex string
-CivMessage parseCivMessage(const String &hexMsg)
-{
-  CivMessage msg = {false, 0, 0, 0, 0, {}};
-
-  sendDebugMessage("CI-V: Parsing message: '" + hexMsg + "'");
-
-  // Remove spaces and convert to upper case
-  String cleanHex = hexMsg;
-  cleanHex.replace(" ", "");
-  cleanHex.toUpperCase();
-
-  sendDebugMessage("CI-V: Clean hex string: '" + cleanHex + "' (length: " + String(cleanHex.length()) + ")");
-
-  // Check minimum length (FE FE TO FROM CMD FD = 12 hex chars = 6 bytes minimum)
-  // Check maximum length to prevent excessive memory allocation
-  if (cleanHex.length() < 12 || cleanHex.length() % 2 != 0 || cleanHex.length() > 128)
-  {
-    sendDebugMessage("CI-V: Invalid message length: " + String(cleanHex.length()) + " (min: 12, max: 128)");
-    return msg;
-  }
-
-  // Convert hex string to bytes with memory bounds checking
-  std::vector<uint8_t> bytes;
-  bytes.reserve(cleanHex.length() / 2); // Pre-allocate to avoid reallocations
-
-  for (int i = 0; i < cleanHex.length(); i += 2)
-  {
-    String byteStr = cleanHex.substring(i, i + 2);
-    uint8_t byte = (uint8_t)strtol(byteStr.c_str(), NULL, 16);
-    bytes.push_back(byte);
-  }
-
-  // Validate CI-V message format
-  if (bytes.size() < 6)
-  {
-    sendDebugMessage("CI-V: Message too short: " + String(bytes.size()) + " bytes");
-    return msg;
-  }
-
-  // Check preamble (FE FE)
-  if (bytes[0] != 0xFE || bytes[1] != 0xFE)
-  {
-    sendDebugMessage("CI-V: Invalid preamble - expected FE FE, got " + String(bytes[0], HEX) + " " + String(bytes[1], HEX));
-    return msg;
-  }
-
-  // Check terminator (FD)
-  if (bytes[bytes.size() - 1] != 0xFD)
-  {
-    String invalidHex = String(bytes[bytes.size() - 1], HEX);
-    invalidHex.toUpperCase();
-    if (invalidHex.length() == 1)
-      invalidHex = "0" + invalidHex;
-    sendDebugMessage("CI-V: Invalid terminator - expected FD, got " + invalidHex);
-    return msg;
-  }
-
-  // Extract message components
-  msg.toAddr = bytes[2];
-  msg.fromAddr = bytes[3];
-  msg.command = bytes[4];
-
-  // For command 35 (outlet status), there is no subcommand - data comes directly after command
-  if (msg.command == 0x35)
-  {
-    msg.subCommand = 0x00; // No subcommand for command 35
-
-    // Extract data portion (after command, before terminator) with bounds checking
-    if (bytes.size() > 6)
-    {
-      for (size_t i = 5; i < bytes.size() - 1 && msg.data.size() < 16; i++)
-      {
-        msg.data.push_back(bytes[i]);
-      }
-    }
-  }
-  else
-  {
-    // For other commands: FE FE TO FROM CMD [SUB] [DATA...] FD
-    if (bytes.size() == 6)
-    {
-      // Basic command, no subcommand
-      msg.subCommand = 0x00;
-    }
-    else if (bytes.size() >= 7)
-    {
-      // Command with subcommand and optional data
-      msg.subCommand = bytes[5];
-
-      // Extract data portion (after subcommand, before terminator) with bounds checking
-      if (bytes.size() > 7)
-      {
-        for (size_t i = 6; i < bytes.size() - 1 && msg.data.size() < 16; i++)
-        {
-          msg.data.push_back(bytes[i]);
-        }
-      }
-    }
-  }
-
-  msg.valid = true;
-
-  // Debug output with memory optimization
-  char debugBuffer[128];
-  snprintf(debugBuffer, sizeof(debugBuffer),
-           "CI-V: Parsed - TO:%02X FROM:%02X CMD:%02X SUB:%02X",
-           msg.toAddr, msg.fromAddr, msg.command, msg.subCommand);
-  sendDebugMessage(String(debugBuffer));
-
-  return msg;
-}
-
-// Check if CI-V message is addressed to us
-bool isCivMessageForUs(const CivMessage &msg)
-{
-  uint8_t ourAddress = getCivAddressByte();
-  bool isBroadcast = (msg.toAddr == 0x00);
-  bool isAddressedToUs = (msg.toAddr == ourAddress);
-
-  // ENHANCED DEBUG for broadcast messages
-  if (isBroadcast)
-  {
-    sendDebugMessage("*** BROADCAST MESSAGE ANALYSIS ***");
-    sendDebugMessage("TO: 0x00 (broadcast), FROM: 0x" + String(msg.fromAddr, HEX) + ", CMD: 0x" + String(msg.command, HEX) + ", SUB: 0x" + String(msg.subCommand, HEX));
-    sendDebugMessage("Our address: 0x" + String(ourAddress, HEX) + ", Broadcast filtering: " + String(CIV_ENABLE_BROADCAST_FILTERING ? "ENABLED" : "DISABLED"));
-  }
-
-  // CI-V ADDRESS FILTERING LOGIC:
-  // 1. For broadcast messages (TO=0x00): Only accept if FROM=CIV_ALLOWED_BROADCAST_SOURCE (0xEE)
-  // 2. For direct messages: Only accept if TO=our address
-
-  if (isBroadcast)
-  {
-    // Check if broadcast filtering is enabled
-    if (CIV_ENABLE_BROADCAST_FILTERING)
-    {
-      // Only accept broadcast messages FROM the allowed source address
-      if (msg.fromAddr == CIV_ALLOWED_BROADCAST_SOURCE)
-      {
-        sendDebugMessage("CI-V: Broadcast message ACCEPTED - FROM 0x" + String(CIV_ALLOWED_BROADCAST_SOURCE, HEX) + " to broadcast (0x00)");
-        return true;
-      }
-      else
-      {
-        sendDebugMessage("CI-V: Broadcast message REJECTED - FROM 0x" + String(msg.fromAddr, HEX) + " (not allowed source 0x" + String(CIV_ALLOWED_BROADCAST_SOURCE, HEX) + ")");
-        return false;
-      }
-    }
-    else
-    {
-      // Broadcast filtering disabled - accept all broadcast messages
-      sendDebugMessage("CI-V: Broadcast message ACCEPTED - filtering disabled, FROM: 0x" + String(msg.fromAddr, HEX));
-      return true;
-    }
-  }
-  else if (isAddressedToUs)
-  {
-    // Direct message to our address - always accept
-    sendDebugMessage("CI-V: Direct message ACCEPTED - TO our address 0x" + String(ourAddress, HEX) + ", FROM: 0x" + String(msg.fromAddr, HEX));
-    return true;
-  }
-  else
-  {
-    // Message not for us - not broadcast and not to our address
-    sendDebugMessage("CI-V: Message REJECTED - TO: 0x" + String(msg.toAddr, HEX) + " (not our address 0x" + String(ourAddress, HEX) + ")");
-    return false;
-  }
-}
-
-// Process CI-V message and generate appropriate response
-// Returns true if message was handled internally, false if it should be forwarded to physical CI-V port
-bool processCivMessage(const CivMessage &msg)
-{
-  uint8_t ourCivAddr = getCivAddressByte();
-
-  // Provide a clear summary of what command we're processing
-  String commandSummary = "CI-V: Processing ";
-  if (msg.command == 0x19 && msg.subCommand == 0x00)
-  {
-    commandSummary += "19 00 (Echo - asking for our CI-V address)";
-  }
-  else if (msg.command == 0x19 && msg.subCommand == 0x01)
-  {
-    commandSummary += "19 01 (Model ID - asking for our IP address in hex)";
-  }
-  else if (msg.command == 0x34)
-  {
-    commandSummary += "34 (Read Model - asking what type of device we are)";
-  }
-  else if (msg.command == 0x35 && msg.data.size() == 0)
-  {
-    commandSummary += "35 (Read Outlet Status - asking what outlets are on/off)";
-  }
-  else if (msg.command == 0x35 && msg.data.size() == 1)
-  {
-    commandSummary += "35 " + String(msg.data[0], HEX) + " (Set Outlet Status - telling us what outlets to turn on/off)";
-  }
-  else
-  {
-    commandSummary += String(msg.command, HEX) + " " + String(msg.subCommand, HEX) + " (Other command)";
-  }
-  sendDebugMessage(commandSummary);
-
-  sendDebugMessage("CI-V: Processing command " + String(msg.command, HEX) + " subcommand " + String(msg.subCommand, HEX) + " with our address 0x" + String(ourCivAddr, HEX));
-
-  // Convert message back to hex string for CI-V processing
-  char hexBuffer[256];
-  int hexPos = 0;
-
-  // Use snprintf for memory-safe hex string construction
-  hexPos += snprintf(hexBuffer + hexPos, sizeof(hexBuffer) - hexPos, "FE FE %02X %02X %02X",
-                     msg.toAddr, msg.fromAddr, msg.command);
-
-  if (msg.command != 0x35)
-  {
-    hexPos += snprintf(hexBuffer + hexPos, sizeof(hexBuffer) - hexPos, " %02X", msg.subCommand);
-  }
-
-  for (uint8_t dataByte : msg.data)
-  {
-    hexPos += snprintf(hexBuffer + hexPos, sizeof(hexBuffer) - hexPos, " %02X", dataByte);
-  }
-
-  hexPos += snprintf(hexBuffer + hexPos, sizeof(hexBuffer) - hexPos, " FD");
-
-  String hexString = String(hexBuffer);
-  sendDebugMessage("CI-V: Processing message directly: " + hexString);
-
-  // Handle specific CI-V commands directly
-  sendDebugMessage("CI-V: Checking command 0x" + String(msg.command, HEX) + " with subcommand 0x" + String(msg.subCommand, HEX));
-
-  // Check for commands we handle directly (19 00 and 19 01)
-  if (msg.command == 0x19 && (msg.subCommand == 0x00 || msg.subCommand == 0x01))
-  {
-    sendDebugMessage("CI-V: Handling command 19 directly");
-
-    if (msg.subCommand == 0x00)
-    {
-      sendDebugMessage("CI-V: 19 00 - Echo request (asking for our CI-V address) - responding with 0x" + String(getCivAddressByte(), HEX));
-
-      // Create echo response using memory-safe buffer
-      char responseBuffer[32];
-      snprintf(responseBuffer, sizeof(responseBuffer), "FE FE %02X %02X 19 00 %02X FD",
-               msg.fromAddr, getCivAddressByte(), getCivAddressByte());
-      String echoResponse = String(responseBuffer);
-
-      sendDebugMessage("<<< CI-V OUTGOING: Echo Response (19 00) - " + echoResponse);
-      sendDebugMessage("    Purpose: Confirming our CI-V address (0x" + String(getCivAddressByte(), HEX) + ") to sender (0x" + String(msg.fromAddr, HEX) + ")");
-      sendDebugMessage("    Original Message: FROM=0x" + String(msg.fromAddr, HEX) + " TO=0x" + String(msg.toAddr, HEX));
-
-      // Send response back via remote WebSocket client only (not to web clients)
-      if (NetworkManager::isClientConnected())
-      {
-        NetworkManager::sendToServer(echoResponse);
-        sendDebugMessage("✓ CI-V: Echo response transmitted via remote WebSocket");
-        sendDebugMessage("✓ CI-V: Response details - " + echoResponse);
-      }
-      else
-      {
-        sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, echo response NOT sent");
-        sendDebugMessage("✗ CI-V: NetworkManager client connection status: " + String(NetworkManager::isClientConnected() ? "CONNECTED" : "DISCONNECTED"));
-      }
-    }
-    else if (msg.subCommand == 0x01)
-    {
-      sendDebugMessage("CI-V: 19 01 - Model ID request (asking for our IP address in hex) - responding with IP as hex");
-
-      // Create ModelID response with IP address using memory-safe buffer
-      IPAddress ip = WiFi.localIP();
-      char responseBuffer[48];
-      snprintf(responseBuffer, sizeof(responseBuffer),
-               "FE FE %02X %02X 19 01 %02X %02X %02X %02X FD",
-               msg.fromAddr, getCivAddressByte(), ip[0], ip[1], ip[2], ip[3]);
-      String modelResponse = String(responseBuffer);
-
-      // Create readable hex representation of IP
-      String ipHex = String(ip[0], HEX) + " " + String(ip[1], HEX) + " " + String(ip[2], HEX) + " " + String(ip[3], HEX);
-      ipHex.toUpperCase();
-
-      sendDebugMessage("<<< CI-V OUTGOING: Model ID Response (19 01) - " + modelResponse);
-      sendDebugMessage("    Purpose: Sending our IP address in hex format");
-      sendDebugMessage("    IP Address: " + ip.toString() + " -> Hex: " + ipHex);
-
-      // Send response back via remote WebSocket client only (not to web clients)
-      if (NetworkManager::isClientConnected())
-      {
-        NetworkManager::sendToServer(modelResponse);
-        sendDebugMessage("✓ CI-V: Model ID response transmitted via remote WebSocket");
-      }
-      else
-      {
-        sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, Model ID response NOT sent");
-      }
-    }
-
-    sendDebugMessage("CI-V: Command 19 handled directly");
-    return true; // Message was handled internally - do NOT forward to physical CI-V port
-  }
-
-  // Handle Command 34 - Read Model
-  if (msg.command == 0x34 && msg.data.size() == 0)
-  {
-    sendDebugMessage("CI-V: 34 - Read Model request (asking what type of device we are) - responding with model type");
-
-    // Get the model type from configuration
-    uint8_t modelType = DEFAULT_CIV_MODEL_TYPE;
-    String modelDescription;
-    switch (modelType)
-    {
-    case CIV_MODEL_ATOM_POWER_OUTLET:
-      modelDescription = "ATOM Power Outlet";
-      break;
-    case CIV_MODEL_WYZE_OUTDOOR_OUTLET:
-      modelDescription = "Wyze Outdoor Power Outlet";
-      break;
-    default:
-      modelDescription = "Unknown Model";
-      break;
-    }
-
-    char responseBuffer[24];
-    snprintf(responseBuffer, sizeof(responseBuffer), "FE FE %02X %02X 34 %02X FD",
-             msg.fromAddr, getCivAddressByte(), modelType);
-    String modelResponse = String(responseBuffer);
-
-    sendDebugMessage("<<< CI-V OUTGOING: Read Model Response (34 " + String(modelType, HEX) + ") - " + modelResponse);
-    sendDebugMessage("    Purpose: Responding with device model type (" + String(modelType, HEX) + " = " + modelDescription + ")");
-
-    // Send response back via remote WebSocket client only (not to web clients)
-    if (NetworkManager::isClientConnected())
-    {
-      NetworkManager::sendToServer(modelResponse);
-      sendDebugMessage("✓ CI-V: Read Model response transmitted via remote WebSocket");
-    }
-    else
-    {
-      sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, Read Model response NOT sent");
-    }
-
-    return true; // Message handled internally
-  }
-
-  // Handle Command 35 - Set Outlet Status (NOT Read!)
-  // Command 35 is ALWAYS a SET operation. The data byte specifies the outlet state.
-  // Format: FE FE TO FROM 35 XX FD where XX is the outlet state (00-03)
-  if (msg.command == 0x35)
-  {
-    sendDebugMessage("*** COMMAND 35 PROCESSING ***");
-    sendDebugMessage("Command 35 is SET operation, Data size: " + String(msg.data.size()) + ", TO addr: 0x" + String(msg.toAddr, HEX));
-
-    // Command 35 should ALWAYS have exactly 1 data byte specifying the outlet state
-    if (msg.data.size() != 1)
-    {
-      sendDebugMessage("*** INVALID COMMAND 35 - Missing or extra data bytes ***");
-      sendDebugMessage("Expected 1 data byte, got " + String(msg.data.size()) + " bytes");
-
-      // Send NAK for malformed command
-      String toAddrHex = String(msg.fromAddr, HEX);
-      toAddrHex.toUpperCase();
-      if (toAddrHex.length() == 1)
-        toAddrHex = "0" + toAddrHex;
-
-      String fromAddrHex = String(getCivAddressByte(), HEX);
-      fromAddrHex.toUpperCase();
-      if (fromAddrHex.length() == 1)
-        fromAddrHex = "0" + fromAddrHex;
-
-      String nakResponse = "FE FE " + toAddrHex + " " + fromAddrHex + " FA FD";
-      sendDebugMessage("<<< CI-V OUTGOING: NAK Response (FA) - " + nakResponse + " - Malformed command 35");
-
-      if (NetworkManager::isClientConnected())
-      {
-        NetworkManager::sendToServer(nakResponse);
-        sendDebugMessage("✓ CI-V: NAK response transmitted via remote WebSocket");
-      }
-      else
-      {
-        sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, NAK response NOT sent");
-      }
-
-      return true;
-    }
-
-    uint8_t setValue = msg.data[0];
-
-    // For broadcast SET operations (TO=0x00), ignore valid values, NAK invalid values
-    if (msg.toAddr == 0x00)
-    {
-      sendDebugMessage("*** BROADCAST SET OPERATION ***");
-      sendDebugMessage("Broadcast SET command 35 " + String(setValue, HEX) + " received");
-
-      if (setValue > 0x03)
-      {
-        sendDebugMessage("Invalid broadcast value 0x" + String(setValue, HEX) + " - responding with NAK");
-
-        String toAddrHex = String(msg.fromAddr, HEX);
-        toAddrHex.toUpperCase();
-        if (toAddrHex.length() == 1)
-          toAddrHex = "0" + toAddrHex;
-
-        String fromAddrHex = String(getCivAddressByte(), HEX);
-        fromAddrHex.toUpperCase();
-        if (fromAddrHex.length() == 1)
-          fromAddrHex = "0" + fromAddrHex;
-
-        String nakResponse = "FE FE " + toAddrHex + " " + fromAddrHex + " FA FD";
-        sendDebugMessage("<<< CI-V OUTGOING: NAK Response (FA) - " + nakResponse + " - Invalid broadcast SET value");
-
-        if (NetworkManager::isClientConnected())
-        {
-          NetworkManager::sendToServer(nakResponse);
-          sendDebugMessage("✓ CI-V: NAK response transmitted via remote WebSocket");
-        }
-        else
-        {
-          sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, NAK response NOT sent");
-        }
-
-        return true;
-      }
-      else
-      {
-        sendDebugMessage("Valid broadcast SET value 0x" + String(setValue, HEX) + " - ignoring as per CI-V protocol");
-        sendDebugMessage("Broadcast SET commands should be ignored by devices (no response)");
-        return true; // Ignore valid broadcast SET messages - no response
-      }
-    }
-
-    // For direct SET commands (TO = our address), process the command and ACK
-    sendDebugMessage("*** DIRECT SET OPERATION ***");
-    sendDebugMessage("Direct SET command 35 " + String(setValue, HEX) + " received");
-
-    String toAddrHex = String(msg.fromAddr, HEX); // TO = original sender
-    toAddrHex.toUpperCase();
-    if (toAddrHex.length() == 1)
-      toAddrHex = "0" + toAddrHex;
-
-    String fromAddrHex = String(getCivAddressByte(), HEX); // FROM = our address
-    fromAddrHex.toUpperCase();
-    if (fromAddrHex.length() == 1)
-      fromAddrHex = "0" + fromAddrHex;
-
-    // Validate the SET value
-    if (setValue > 0x03)
-    {
-      sendDebugMessage("Invalid SET value 0x" + String(setValue, HEX) + " - responding with NAK");
-
-      String nakResponse = "FE FE " + toAddrHex + " " + fromAddrHex + " FA FD";
-      sendDebugMessage("<<< CI-V OUTGOING: NAK Response (FA) - " + nakResponse + " - Invalid SET value");
-
-      if (NetworkManager::isClientConnected())
-      {
-        NetworkManager::sendToServer(nakResponse);
-        sendDebugMessage("✓ CI-V: NAK response transmitted via remote WebSocket");
-      }
-      else
-      {
-        sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, NAK response NOT sent");
-      }
-
-      return true;
-    }
-
-    // Process valid SET command
-    String commandDescription = "";
-    bool newRelay1State = false;
-    bool newRelay2State = false;
-
-    switch (setValue)
-    {
-    case 0x00: // Both outlets OFF
-      newRelay1State = false;
-      newRelay2State = false;
-      commandDescription = "Set both outlets OFF";
-      break;
-    case 0x01: // Outlet 1 ON, Outlet 2 OFF
-      newRelay1State = true;
-      newRelay2State = false;
-      commandDescription = "Set Outlet 1 ON, Outlet 2 OFF";
-      break;
-    case 0x02: // Outlet 1 OFF, Outlet 2 ON
-      newRelay1State = false;
-      newRelay2State = true;
-      commandDescription = "Set Outlet 1 OFF, Outlet 2 ON";
-      break;
-    case 0x03: // Both outlets ON
-      newRelay1State = true;
-      newRelay2State = true;
-      commandDescription = "Set both outlets ON";
-      break;
-    }
-
-    sendDebugMessage("Processing SET command: " + commandDescription);
-
-    // Apply the new relay states
-    relay1State = newRelay1State;
-    relay2State = newRelay2State;
-
-    sendDebugMessage("Updating hardware: Relay1=" + String(relay1State ? "ON" : "OFF") + ", Relay2=" + String(relay2State ? "ON" : "OFF"));
-
-    // Update hardware using HardwareController
-    hardware.setRelay(1, relay1State);
-    hardware.setRelay(2, relay2State);
-
-    // Ensure global variables are in sync with DeviceState
-    syncRelayStatesWithDeviceState();
-
-    // Trigger event-driven update for relay state change
-    triggerRelayStateChangeEvent();
-
-    // Send ACK response (echo back the set value)
-    String statusHex = String(setValue, HEX);
-    statusHex.toUpperCase();
-    if (statusHex.length() == 1)
-      statusHex = "0" + statusHex;
-
-    String ackResponse = "FE FE " + toAddrHex + " " + fromAddrHex + " 35 " + statusHex + " FD";
-    sendDebugMessage("<<< CI-V OUTGOING: SET ACK (35 " + statusHex + ") - " + ackResponse + " - Acknowledging " + commandDescription);
-
-    if (NetworkManager::isClientConnected())
-    {
-      NetworkManager::sendToServer(ackResponse);
-      sendDebugMessage("✓ CI-V: SET ACK response transmitted via remote WebSocket");
-    }
-    else
-    {
-      sendDebugMessage("✗ CI-V: WARNING - Remote WebSocket not connected, SET ACK NOT sent");
-    }
-
-    return true; // Message handled internally
-  }
-
-  // For all other commands, handle them directly with appropriate responses
-  switch (msg.command)
-  {
-  case 0x30: // Device type/model
-    sendDebugMessage("CI-V: Device type request received - handling directly");
-    break;
-
-  case 0x31: // Antenna/port selection
-    if (msg.subCommand == 0x00)
-    {
-      sendDebugMessage("CI-V: Antenna port read request - handling directly");
-    }
-    else if (msg.subCommand >= 1 && msg.subCommand <= 8)
-    {
-      sendDebugMessage("CI-V: Antenna port set to " + String(msg.subCommand) + " - handling directly");
-    }
-    break;
-
-  default:
-    sendDebugMessage("CI-V: Unknown command " + String(msg.command, HEX) + " - no additional processing needed");
-    break;
-  }
-
-  // All CI-V messages are now handled directly above
-  sendDebugMessage("CI-V: Message processing completed - no external library needed");
-
-  return true; // All messages are handled internally now
-}
-
-// -------------------------------------------------------------------------
-// CI-V Message Handler for WebSocket Client
-// -------------------------------------------------------------------------
+/**
+ * @brief Handle received CI-V message (wrapper for modular CI-V handler)
+ * @param message Raw CI-V message string
+ */
 void handleReceivedCivMessage(const String &message)
 {
-  sendDebugMessage("=== CI-V MESSAGE RECEIVED FROM WEBSOCKET CLIENT ===");
-  sendDebugMessage("Raw message from remote server: '" + message + "'");
-  sendDebugMessage("Message length: " + String(message.length()) + " characters");
-  sendDebugMessage("Our CI-V address: 0x" + String(getCivAddressByte(), HEX) + " (device ID " + String(DeviceState::getDeviceConfig().deviceId) + ")");
-
-  // ENHANCED DEBUG: Always show what we received
-  Serial.println("*** CI-V TRAFFIC: " + message + " ***");
-
-  // Check if it looks like a CI-V hex message
-  if (message.length() >= 12 && message.indexOf("FE") != -1)
-  {
-    sendDebugMessage("Message appears to be CI-V format - processing...");
-
-    // Parse and validate CI-V message
-    CivMessage civMsg = parseCivMessage(message);
-
-    if (civMsg.valid)
-    {
-      sendDebugMessage("CI-V message parsed successfully");
-      sendDebugMessage("Parsed details: TO=0x" + String(civMsg.toAddr, HEX) + " FROM=0x" + String(civMsg.fromAddr, HEX) + " CMD=0x" + String(civMsg.command, HEX) + " SUB=0x" + String(civMsg.subCommand, HEX));
-
-      // Check if message is addressed to us
-      if (isCivMessageForUs(civMsg))
-      {
-        sendDebugMessage("CI-V message IS addressed to us - processing...");
-
-        // Process the CI-V message
-        bool handledInternally = processCivMessage(civMsg);
-
-        if (handledInternally)
-        {
-          sendDebugMessage("CI-V message handled internally - no further action needed");
-        }
-        else
-        {
-          sendDebugMessage("CI-V message processed but may need physical port forwarding");
-        }
-      }
-      else
-      {
-        sendDebugMessage("CI-V message not addressed to us - ignoring");
-      }
-    }
-    else
-    {
-      sendDebugMessage("CI-V message parsing failed - invalid format");
-    }
-  }
-  else
-  {
-    sendDebugMessage("Message does not appear to be CI-V format (too short or no FE preamble)");
-  }
-
-  sendDebugMessage("=== CI-V MESSAGE PROCESSING COMPLETE ===");
+  // Use the modular CI-V handler
+  civHandler.handleReceivedCivMessage(message);
 }
 
 // -------------------------------------------------------------------------
@@ -1047,6 +418,12 @@ void setup()
 {
   Serial.begin(115200);
   delay(2000); // Longer delay for stability
+
+  // Configure watchdog timer for heavy CI-V traffic handling
+  // 60 second timeout to prevent lockups during intensive message processing
+  esp_task_wdt_init(60, true);
+  esp_task_wdt_add(NULL); // Add current task to watchdog
+  LOG_INFO("Watchdog timer configured: 60s timeout for heavy CI-V traffic");
 
   // Initialize the new logging system
   Logger::init(LogLevel::INFO);
@@ -1304,11 +681,15 @@ void setup()
 
   Serial.println("Device ID: " + String(deviceId) + ", CIV Address: " + civAddress);
 
-  // Initialize CI-V handler with NetworkManager's WebSocket client and Device ID
-  uint8_t civAddrByte = getCivAddressByte();
-  sendDebugMessage("CI-V: Initializing CI-V handler with address: 0x" + String(civAddrByte, HEX) + " (decimal " + String(civAddrByte) + ")");
-  // Note: CI-V processing is now handled directly in processCivMessage()
+  // Initialize modular CI-V handler
+  civHandler.setDebugCallback(sendDebugMessage);
+  civHandler.init(deviceId);
+  uint8_t civAddrByte = civHandler.getCivAddressByte();
+  sendDebugMessage("CI-V: Modular CI-V handler initialized with address: 0x" + String(civAddrByte, HEX) + " (decimal " + String(civAddrByte) + ")");
   Serial.println("CI-V handler initialized with address: 0x" + String(civAddrByte, HEX));
+
+  // Sync current relay states with CI-V handler
+  civHandler.setRelayStates(relay1State, relay2State);
 
   // Log CI-V filtering configuration
   Serial.println("CI-V Address Filtering Configuration:");
@@ -1574,8 +955,8 @@ void setup()
   ArduinoOTA.onEnd([]()
                    { 
                      Serial.println("\nOTA update complete");
-                     // Re-enable watchdog timer after OTA with  30 second timeout
-                     esp_task_wdt_init(30, true);
+                     // Re-enable watchdog timer after OTA with 60 second timeout for heavy CI-V traffic
+                     esp_task_wdt_init(60, true);
                      Serial.println("Watchdog timer re-enabled after OTA"); });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
                         { Serial.printf("OTA Progress: %u%%\r", (progress * 100) / total); });
@@ -1956,8 +1337,14 @@ void loop()
   // Reset watchdog timer to prevent resets during normal operation
   esp_task_wdt_reset();
 
+  // Performance optimization: Yield to other tasks before heavy network processing
+  yield();
+
   // Update network manager (handles WebSocket client, UDP discovery) - CRITICAL!
   NetworkManager::update();
+
+  // Yield after network processing to prevent blocking
+  yield();
 
   // Process event-driven sensor updates (triggered by hardware timer)
   if (EventManager::isSensorUpdateTriggered())
@@ -1966,6 +1353,9 @@ void loop()
     checkSensorChanges();
     checkRelayStateChanges();
     checkCivConnectionChanges();
+
+    // Yield after sensor processing
+    yield();
   }
 
   // Process event-driven system status updates (triggered by hardware timer)
@@ -2019,6 +1409,27 @@ void loop()
     lastNetworkDebug = millis();
   }
 
+  // Heap monitoring during heavy CI-V traffic
+  static unsigned long lastHeapCheck = 0;
+  static uint32_t minHeap = ESP.getFreeHeap();
+  unsigned long currentTime = millis();    // Define currentTime for heap monitoring
+  if (currentTime - lastHeapCheck > 30000) // Every 30 seconds
+  {
+    uint32_t currentHeap = ESP.getFreeHeap();
+    if (currentHeap < minHeap)
+    {
+      minHeap = currentHeap;
+    }
+
+    if (currentHeap < 10000) // Less than 10KB free
+    {
+      sendDebugMessage("WARNING: Low heap memory: " + String(currentHeap) + " bytes free");
+      sendDebugMessage("Minimum heap seen: " + String(minHeap) + " bytes");
+    }
+
+    lastHeapCheck = currentTime;
+  }
+
   // Check for button presses using hardware controller
   if (hardware.checkButton1Pressed())
   {
@@ -2042,8 +1453,11 @@ void loop()
   // Process events using EventManager
   EventManager::processEvents();
 
-  // Small delay to prevent tight loop CPU usage
-  delay(10);
+  // Yield before delay to ensure other tasks can run
+  yield();
+
+  // Increased delay for heavy CI-V traffic handling - prevents CPU starvation
+  delay(20); // Increased from 10ms to 20ms for better stability
 }
 
 // -------------------------------------------------------------------------
@@ -2184,4 +1598,7 @@ void syncRelayStatesWithDeviceState()
   const auto &relayState = DeviceState::getRelayState();
   relay1State = relayState.relay1;
   relay2State = relayState.relay2;
+
+  // Sync with CI-V handler as well
+  civHandler.setRelayStates(relay1State, relay2State);
 }

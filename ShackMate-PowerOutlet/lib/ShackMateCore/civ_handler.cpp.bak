@@ -84,7 +84,7 @@ bool CivHandler::hexStringToBytes(const String &hexStr, std::vector<uint8_t> &by
     // Validate length
     if (cleanHex.length() < 12 || cleanHex.length() % 2 != 0 || cleanHex.length() > 128)
     {
-        this->sendDebugMessage("CI-V: Invalid message length: " + String(cleanHex.length()) + " (min: 12, max: 128)");
+        sendDebugMessage("CI-V: Invalid message length: " + String(cleanHex.length()) + " (min: 12, max: 128)");
         return false;
     }
 
@@ -107,15 +107,15 @@ bool CivHandler::validateCivFormat(const std::vector<uint8_t> &bytes)
     // Check minimum length
     if (bytes.size() < 6)
     {
-        this->sendDebugMessage("CI-V: Message too short: " + String(bytes.size()) + " bytes");
+        sendDebugMessage("CI-V: Message too short: " + String(bytes.size()) + " bytes");
         return false;
     }
 
     // Check preamble (FE FE)
     if (bytes[0] != 0xFE || bytes[1] != 0xFE)
     {
-        this->sendDebugMessage("CI-V: Invalid preamble - expected FE FE, got " +
-                               String(bytes[0], HEX) + " " + String(bytes[1], HEX));
+        sendDebugMessage("CI-V: Invalid preamble - expected FE FE, got " +
+                         String(bytes[0], HEX) + " " + String(bytes[1], HEX));
         return false;
     }
 
@@ -126,7 +126,7 @@ bool CivHandler::validateCivFormat(const std::vector<uint8_t> &bytes)
         invalidHex.toUpperCase();
         if (invalidHex.length() == 1)
             invalidHex = "0" + invalidHex;
-        this->sendDebugMessage("CI-V: Invalid terminator - expected FD, got " + invalidHex);
+        sendDebugMessage("CI-V: Invalid terminator - expected FD, got " + invalidHex);
         return false;
     }
 
@@ -185,14 +185,14 @@ void CivHandler::extractMessageComponents(const std::vector<uint8_t> &bytes, Civ
     snprintf(debugBuffer, sizeof(debugBuffer),
              "CI-V: Parsed - TO:%02X FROM:%02X CMD:%02X SUB:%02X",
              msg.toAddr, msg.fromAddr, msg.command, msg.subCommand);
-    this->sendDebugMessage(String(debugBuffer));
+    sendDebugMessage(String(debugBuffer));
 }
 
 CivMessage CivHandler::parseCivMessage(const String &hexMsg)
 {
     CivMessage msg = {false, 0, 0, 0, 0, {}};
 
-    this->sendDebugMessage("CI-V: Parsing message: '" + hexMsg + "'");
+    sendDebugMessage("CI-V: Parsing message: '" + hexMsg + "'");
 
     // Convert hex string to bytes
     std::vector<uint8_t> bytes;
@@ -201,7 +201,7 @@ CivMessage CivHandler::parseCivMessage(const String &hexMsg)
         return msg; // Invalid format
     }
 
-    this->sendDebugMessage("CI-V: Clean hex processed, " + String(bytes.size()) + " bytes");
+    sendDebugMessage("CI-V: Clean hex processed, " + String(bytes.size()) + " bytes");
 
     // Validate CI-V message format
     if (!validateCivFormat(bytes))
@@ -222,22 +222,22 @@ bool CivHandler::isBroadcastAllowed(const CivMessage &msg)
         // Only accept broadcast messages FROM the allowed source address
         if (msg.fromAddr == CIV_ALLOWED_BROADCAST_SOURCE)
         {
-            this->sendDebugMessage("CI-V: Broadcast message ACCEPTED - FROM 0x" +
-                                   String(CIV_ALLOWED_BROADCAST_SOURCE, HEX) + " to broadcast (0x00)");
+            sendDebugMessage("CI-V: Broadcast message ACCEPTED - FROM 0x" +
+                             String(CIV_ALLOWED_BROADCAST_SOURCE, HEX) + " to broadcast (0x00)");
             return true;
         }
         else
         {
-            this->sendDebugMessage("CI-V: Broadcast message REJECTED - FROM 0x" + String(msg.fromAddr, HEX) +
-                                   " (not allowed source 0x" + String(CIV_ALLOWED_BROADCAST_SOURCE, HEX) + ")");
+            sendDebugMessage("CI-V: Broadcast message REJECTED - FROM 0x" + String(msg.fromAddr, HEX) +
+                             " (not allowed source 0x" + String(CIV_ALLOWED_BROADCAST_SOURCE, HEX) + ")");
             return false;
         }
     }
     else
     {
         // Broadcast filtering disabled - accept all broadcast messages
-        this->sendDebugMessage("CI-V: Broadcast message ACCEPTED - filtering disabled, FROM: 0x" +
-                               String(msg.fromAddr, HEX));
+        sendDebugMessage("CI-V: Broadcast message ACCEPTED - filtering disabled, FROM: 0x" +
+                         String(msg.fromAddr, HEX));
         return true;
     }
 }
@@ -250,11 +250,11 @@ bool CivHandler::isCivMessageForUs(const CivMessage &msg)
     // Enhanced debug for broadcast messages
     if (isBroadcast)
     {
-        this->sendDebugMessage("*** BROADCAST MESSAGE ANALYSIS ***");
-        this->sendDebugMessage("TO: 0x00 (broadcast), FROM: 0x" + String(msg.fromAddr, HEX) +
-                               ", CMD: 0x" + String(msg.command, HEX) + ", SUB: 0x" + String(msg.subCommand, HEX));
-        this->sendDebugMessage("Our address: 0x" + String(m_civAddress, HEX) +
-                               ", Broadcast filtering: " + String(CIV_ENABLE_BROADCAST_FILTERING ? "ENABLED" : "DISABLED"));
+        sendDebugMessage("*** BROADCAST MESSAGE ANALYSIS ***");
+        sendDebugMessage("TO: 0x00 (broadcast), FROM: 0x" + String(msg.fromAddr, HEX) +
+                         ", CMD: 0x" + String(msg.command, HEX) + ", SUB: 0x" + String(msg.subCommand, HEX));
+        sendDebugMessage("Our address: 0x" + String(m_civAddress, HEX) +
+                         ", Broadcast filtering: " + String(CIV_ENABLE_BROADCAST_FILTERING ? "ENABLED" : "DISABLED"));
     }
 
     // CI-V address filtering logic
@@ -265,15 +265,15 @@ bool CivHandler::isCivMessageForUs(const CivMessage &msg)
     else if (isAddressedToUs)
     {
         // Direct message to our address - always accept
-        this->sendDebugMessage("CI-V: Direct message ACCEPTED - TO our address 0x" + String(m_civAddress, HEX) +
-                               ", FROM: 0x" + String(msg.fromAddr, HEX));
+        sendDebugMessage("CI-V: Direct message ACCEPTED - TO our address 0x" + String(m_civAddress, HEX) +
+                         ", FROM: 0x" + String(msg.fromAddr, HEX));
         return true;
     }
     else
     {
         // Message not for us
-        this->sendDebugMessage("CI-V: Message REJECTED - TO: 0x" + String(msg.toAddr, HEX) +
-                               " (not our address 0x" + String(m_civAddress, HEX) + ")");
+        sendDebugMessage("CI-V: Message REJECTED - TO: 0x" + String(msg.toAddr, HEX) +
+                         " (not our address 0x" + String(m_civAddress, HEX) + ")");
         return false;
     }
 }
@@ -355,8 +355,8 @@ String CivHandler::handleOutletControl(uint8_t fromAddr, const std::vector<uint8
             unsigned long currentTime = millis();
             if (currentTime - m_lastProcessDebugTime > 3000)
             {
-                this->sendDebugMessage("CI-V: Outlets changed - 1:" + String(relay1State ? "ON" : "OFF") +
-                                       " 2:" + String(relay2State ? "ON" : "OFF"));
+                sendDebugMessage("CI-V: Outlets changed - 1:" + String(relay1State ? "ON" : "OFF") +
+                                 " 2:" + String(relay2State ? "ON" : "OFF"));
             }
         }
 
@@ -387,7 +387,7 @@ bool CivHandler::processCivMessage(const CivMessage &msg)
         else
             commandSummary += "Command 0x" + String(msg.command, HEX);
 
-        this->sendDebugMessage(commandSummary);
+        sendDebugMessage(commandSummary);
         m_lastProcessDebugTime = currentTime;
     }
 
@@ -426,7 +426,7 @@ bool CivHandler::processCivMessage(const CivMessage &msg)
 
         if (verboseLogging)
         {
-            this->sendDebugMessage("CI-V Response: " + response);
+            sendDebugMessage("CI-V Response: " + response);
         }
     }
 
@@ -444,8 +444,8 @@ void CivHandler::handleReceivedCivMessage(const String &message)
         unsigned long currentTime = millis();
         if (currentTime - m_lastRateLimitLog > 5000) // Every 5 seconds
         {
-            this->sendDebugMessage("CI-V RATE LIMITED: Dropped " + String(rateLimiter.getDroppedCount()) +
-                                   " messages. Current rate: " + String(rateLimiter.getCurrentRate()) + "/sec");
+            sendDebugMessage("CI-V RATE LIMITED: Dropped " + String(rateLimiter.getDroppedCount()) +
+                             " messages. Current rate: " + String(rateLimiter.getCurrentRate()) + "/sec");
             m_lastRateLimitLog = currentTime;
         }
         return; // Drop the message
@@ -460,9 +460,9 @@ void CivHandler::handleReceivedCivMessage(const String &message)
 
     if (verboseLogging)
     {
-        this->sendDebugMessage("=== CI-V MESSAGE RECEIVED (Count: " + String(m_messageCount) + ") ===");
-        this->sendDebugMessage("Raw message: '" + message + "' (length: " + String(message.length()) + ")");
-        this->sendDebugMessage("Our CI-V address: 0x" + String(m_civAddress, HEX));
+        sendDebugMessage("=== CI-V MESSAGE RECEIVED (Count: " + String(m_messageCount) + ") ===");
+        sendDebugMessage("Raw message: '" + message + "' (length: " + String(message.length()) + ")");
+        sendDebugMessage("Our CI-V address: 0x" + String(m_civAddress, HEX));
         m_lastCivDebugTime = currentTime;
     }
 
@@ -473,7 +473,7 @@ void CivHandler::handleReceivedCivMessage(const String &message)
     if (message.length() < 12 || message.indexOf("FE") == -1)
     {
         if (verboseLogging)
-            this->sendDebugMessage("Message too short or not CI-V format - ignoring");
+            sendDebugMessage("Message too short or not CI-V format - ignoring");
         return;
     }
 
@@ -484,9 +484,9 @@ void CivHandler::handleReceivedCivMessage(const String &message)
     {
         if (verboseLogging)
         {
-            this->sendDebugMessage("CI-V addressed to us: TO=0x" + String(civMsg.toAddr, HEX) +
-                                   " FROM=0x" + String(civMsg.fromAddr, HEX) +
-                                   " CMD=0x" + String(civMsg.command, HEX));
+            sendDebugMessage("CI-V addressed to us: TO=0x" + String(civMsg.toAddr, HEX) +
+                             " FROM=0x" + String(civMsg.fromAddr, HEX) +
+                             " CMD=0x" + String(civMsg.command, HEX));
         }
 
         // Process the CI-V message with optimized handling
@@ -494,7 +494,7 @@ void CivHandler::handleReceivedCivMessage(const String &message)
     }
     else if (verboseLogging)
     {
-        this->sendDebugMessage("CI-V message not for us or invalid - ignoring");
+        sendDebugMessage("CI-V message not for us or invalid - ignoring");
     }
 
     // Yield processing to prevent blocking during heavy traffic

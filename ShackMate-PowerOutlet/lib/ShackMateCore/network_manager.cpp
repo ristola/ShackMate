@@ -249,58 +249,57 @@ void NetworkManager::onWebSocketClientEvent(WStype_t type, uint8_t *payload, siz
         {
             lastWebSocketActivity = millis();
             String message = String((char *)payload);
-            LOG_DEBUG("WebSocket client received: " + message);
 
-            // Enhanced CI-V debug logging for specific commands
-            if (message.length() >= 12 && message.indexOf("FE") != -1)
+            // Performance optimization: Reduce verbose logging during heavy traffic
+            static unsigned long lastCivLogTime = 0;
+            static uint32_t messageCount = 0;
+            unsigned long currentTime = millis();
+
+            messageCount++;
+            bool verboseLogging = (currentTime - lastCivLogTime > 5000); // Every 5 seconds
+
+            if (verboseLogging)
+            {
+                LOG_DEBUG("WebSocket received message #" + String(messageCount) + ": " + message);
+                lastCivLogTime = currentTime;
+            }
+
+            // Enhanced CI-V debug logging for specific commands (only when verbose)
+            if (verboseLogging && message.length() >= 12 && message.indexOf("FE") != -1)
             {
                 // Check for CI-V commands we're interested in
                 if (message.indexOf("19 00") != -1)
                 {
-                    LOG_INFO(">>> CI-V INCOMING: Echo Request (19 00) - Should respond with our CI-V address (B3)");
-                    LOG_INFO("    Raw message: " + message);
+                    LOG_INFO("CI-V: Echo Request (19 00) received");
                 }
                 else if (message.indexOf("19 01") != -1)
                 {
-                    // Get current IP for debug display
-                    IPAddress currentIP = WiFi.localIP();
-                    String ipHex = String(currentIP[0], HEX) + " " + String(currentIP[1], HEX) + " " +
-                                   String(currentIP[2], HEX) + " " + String(currentIP[3], HEX);
-                    ipHex.toUpperCase();
-                    LOG_INFO(">>> CI-V INCOMING: Model ID Request (19 01) - Should respond with IP in hex: " + ipHex);
-                    LOG_INFO("    Current IP: " + currentIP.toString() + " -> Hex: " + ipHex);
-                    LOG_INFO("    Raw message: " + message);
+                    LOG_INFO("CI-V: Model ID Request (19 01) received");
                 }
                 else if (message.indexOf(" 34 ") != -1)
                 {
-                    LOG_INFO(">>> CI-V INCOMING: Read Model Request (34) - Should respond with device model");
-                    LOG_INFO("    Model Types: 00=ATOM Power Outlet, 01=Wyze Outdoor Power Outlet");
-                    LOG_INFO("    Raw message: " + message);
+                    LOG_INFO("CI-V: Read Model Request (34) received");
                 }
                 else if (message.indexOf(" 35 ") != -1 || message.indexOf(" 35") == message.length() - 3)
                 {
-                    LOG_INFO(">>> CI-V INCOMING: Outlet Status Request/Set (35) - Outlet control command");
-                    LOG_INFO("    Raw message: " + message);
+                    LOG_INFO("CI-V: Outlet Control (35) received");
                 }
                 else if (message.indexOf("FE FE B3") != -1)
                 {
-                    LOG_INFO(">>> CI-V INCOMING: Direct message to our CI-V address (B3)");
-                    LOG_INFO("    Raw message: " + message);
+                    LOG_INFO("CI-V: Direct message to our address received");
                 }
                 else if (message.indexOf("FE FE 00") != -1)
                 {
-                    LOG_INFO(">>> CI-V INCOMING: Broadcast message (00) - We should respond");
-                    LOG_INFO("    Raw message: " + message);
-                }
-                else
-                {
-                    LOG_DEBUG("CI-V message (other): " + message);
+                    LOG_INFO("CI-V: Broadcast message received");
                 }
             }
 
             // Forward message to main application for processing
             extern void handleReceivedCivMessage(const String &message);
             handleReceivedCivMessage(message);
+
+            // Yield after processing to prevent blocking
+            yield();
             break;
         }
 
