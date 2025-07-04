@@ -106,24 +106,14 @@ Serial 2   GPIO39, GPIO38  User / Free   Yes (I2C pins)
 */
 
 // -------------------------------------------------------------------------
-// Logging System - Using ShackMateCore Logger
-// -------------------------------------------------------------------------
-// Replace debug macros with ShackMateCore Logger calls
-#define DBG_PRINT(msg) Logger::debug(String(msg))
-#define DBG_PRINTLN(msg) Logger::info(String(msg))
-#define DBG_PRINTF(fmt, ...) Logger::info(String("DBG: ") + String(fmt))
-// -------------------------------------------------------------------------
 // Standard Arduino and ESP32 Libraries
 // -------------------------------------------------------------------------
 #include <WiFi.h>
-#include <AsyncTCP.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
 #include <WiFiUdp.h>
-#include <time.h>          // NTP and time functions
-#include <ArduinoOTA.h>    // OTA Over-the-Air updates
-#include <esp_system.h>    // Chip revision, efuse, etc.
-#include <esp_spi_flash.h> // Chip flash size
+#include <time.h>       // NTP and time functions
+#include <ArduinoOTA.h> // OTA Over-the-Air updates
 #if defined(M5ATOM_S3) || defined(ARDUINO_M5Stack_ATOMS3)
 #include <M5AtomS3.h>
 #include <Adafruit_NeoPixel.h>
@@ -133,7 +123,6 @@ Serial 2   GPIO39, GPIO38  User / Free   Yes (I2C pins)
 #endif
 // -------------------------------------------------------------------------
 #include <WebSocketsClient.h>
-#include <freertos/semphr.h>
 #include <ESPAsyncWebServer.h>
 #include "esp_task_wdt.h"
 #include <deque>
@@ -820,7 +809,7 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
 // myTaskDebug: Handles CI-V serial/UDP processing ONLY, runs on Core 1.
 void myTaskDebug(void *parameter)
 {
-  DBG_PRINTLN("CI-V task started with new modular handlers");
+  Logger::info("CI-V task started with new modular handlers");
   esp_task_wdt_add(NULL); // Add this task to watchdog
 
   for (;;)
@@ -1076,11 +1065,11 @@ void setup()
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo))
   {
-    DBG_PRINTLN("Failed to obtain time");
+    Logger::warning("Failed to obtain time");
   }
   else
   {
-    DBG_PRINTLN("Time synchronized");
+    Logger::info("Time synchronized");
   }
 
   // Initialize file system and serve static files
@@ -1148,17 +1137,15 @@ void setup()
                 });
   httpServer.addHandler(&wsServer);
   httpServer.begin();
-  DBG_PRINTLN("HTTP server started on port 80");
+  Logger::info("HTTP server started on port 80");
 
   if (!MDNS.begin(MDNS_NAME))
   {
-    DBG_PRINTLN("Error setting up mDNS responder!");
+    Logger::error("Error setting up mDNS responder!");
   }
   else
   {
-    DBG_PRINT("mDNS responder started: http://");
-    Logger::debug("mDNS name: " + String(MDNS_NAME));
-    DBG_PRINTLN(".local");
+    Logger::info("mDNS responder started: http://shackmate.local");
   }
 
   udp.begin(UDP_PORT);
@@ -1182,14 +1169,14 @@ void setup()
 
   ArduinoOTA.onStart([&]()
                      {
-                       DBG_PRINTLN("OTA update starting...");
+                       Logger::info("OTA update starting...");
                        esp_task_wdt_delete(NULL); // Disable the watchdog for the current task during OTA
                        otaInProgress = true;
                        setRgb(64, 64, 64); // Ensure LED is white on start OTA
                      });
   ArduinoOTA.onEnd([&]()
                    {
-                     DBG_PRINTLN("\nOTA update complete");
+                     Logger::info("OTA update complete");
                      otaInProgress = false;
                      esp_task_wdt_init(10, true); // Re-enable watchdog after OTA
                      esp_task_wdt_add(NULL);      // Add current (loop) task to WDT
@@ -1209,16 +1196,16 @@ void setup()
   ArduinoOTA.onError([](ota_error_t error)
                      {
     Logger::error("OTA Error: " + String(error));
-    if (error == OTA_AUTH_ERROR) DBG_PRINTLN("Authentication Failed");
-    else if (error == OTA_BEGIN_ERROR) DBG_PRINTLN("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) DBG_PRINTLN("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) DBG_PRINTLN("Receive Failed");
-    else if (error == OTA_END_ERROR) DBG_PRINTLN("End Failed"); });
+    if (error == OTA_AUTH_ERROR) Logger::error("OTA Authentication Failed");
+    else if (error == OTA_BEGIN_ERROR) Logger::error("OTA Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Logger::error("OTA Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Logger::error("OTA Receive Failed");
+    else if (error == OTA_END_ERROR) Logger::error("OTA End Failed"); });
   ArduinoOTA.begin();
-  DBG_PRINTLN("OTA update service started");
+  Logger::info("OTA update service started");
 
   tcpServer.begin();
-  DBG_PRINTLN("Raw TCP server started on port 4000");
+  Logger::info("Raw TCP server started on port 4000");
 
   // Enable internal pull-up resistors on Serial RX pins to avoid floating input
   pinMode(MY_RX1, INPUT_PULLUP); // Serial1 RX (GPIO22)

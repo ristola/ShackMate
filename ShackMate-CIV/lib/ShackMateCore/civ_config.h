@@ -6,7 +6,7 @@
 #define NAME "ShackMate - CI-V Controller"
 #define VERSION "2.2.0"
 #define AUTHOR "Half Baked Circuits"
-#define MDNS_NAME "shackmate-civ"
+#define MDNS_NAME "ShackMate-CI-V"
 
 // Network Configuration
 #define UDP_PORT 4210
