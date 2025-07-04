@@ -800,7 +800,7 @@ void webSocketClientEvent(WStype_t type, uint8_t *payload, size_t length)
   {
     uint8_t toAddr = buffer[2];
     uint8_t fromAddr = buffer[3];
-    
+
     if (toAddr == 0x00 && fromAddr != 0xEE)
     {
       Logger::warning("Filtered broadcast command from non-management address 0x" + String(fromAddr, HEX) + " - dropping");

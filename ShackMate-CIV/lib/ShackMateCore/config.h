@@ -1,14 +1,13 @@
 #pragma once
 
 // -------------------------------------------------------------------------
-// Project Configuration
+// Project Configuration (defer to civ_config.h for CI-V specific settings)
 // -------------------------------------------------------------------------
-#define NAME "ShackMate - CI-V Controller"
-#define VERSION "2.2.0"
-#define AUTHOR "Half Baked Circuits"
-#define MDNS_NAME "ShackMate-CI-V"
 
-// Network Configuration
+// Include CI-V specific configuration
+#include "civ_config.h"
+
+// Network Configuration (shared)
 #define UDP_PORT 4210
 #define WEBSOCKET_PORT 4000
 #define HTTP_PORT 80
@@ -46,14 +45,12 @@ static constexpr size_t MAX_DEVICE_NAME_LENGTH = 64;
 static constexpr size_t MAX_LABEL_LENGTH = 32;
 static constexpr size_t MAX_CIV_MESSAGE_LENGTH = 128;
 
-// Device Configuration
+// Device Configuration (CI-V Controller specific - remove duplicates)
 #define MIN_DEVICE_ID 1
 #define MAX_DEVICE_ID 4
 #define DEFAULT_DEVICE_ID 1
 #define DEFAULT_CIV_ADDRESS "B0"
-#define DEFAULT_DEVICE_NAME "ShackMate CI-V Controller"
 
-// CI-V Model Type Constants
+// CI-V Model Type Constants (leave only for compatibility)
 #define CIV_MODEL_ATOM_POWER_OUTLET 0x00   // 00 = ATOM Power Outlet
 #define CIV_MODEL_WYZE_OUTDOOR_OUTLET 0x01 // 01 = Wyze Outdoor Power Outlet
-#define DEFAULT_CIV_MODEL_TYPE CIV_MODEL_WYZE_OUTDOOR_OUTLET

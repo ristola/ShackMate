@@ -53,6 +53,23 @@ struct ConnectionState
     unsigned long lastPingSent = 0;
 };
 
+struct WebSocketMetrics
+{
+    uint32_t disconnects = 0;
+    uint32_t reconnects = 0;
+    uint32_t reconnect_attempts = 0;
+    uint32_t rate_limited_messages = 0;
+    uint32_t messages_sent = 0;
+    uint32_t messages_rate_limited = 0; // Add missing field
+    uint32_t total_disconnects = 0;     // Add missing field
+    uint32_t ping_rtt = 0;
+    uint8_t connection_quality = 0;
+    bool ping_pending = false; // Add missing field
+    unsigned long last_ping_sent = 0;
+    unsigned long last_ping_received = 0;
+    unsigned long last_pong_received = 0; // Add missing field
+};
+
 class DeviceState
 {
 private:
@@ -61,6 +78,7 @@ private:
     static CalibrationData calibrationData;
     static SensorData sensorData;
     static ConnectionState connectionState;
+    static WebSocketMetrics webSocketMetrics;
     static unsigned long bootTime;
 
 public:
@@ -91,6 +109,10 @@ public:
     // Connection State
     static ConnectionState &getConnectionState() { return connectionState; }
     static void setConnectionState(bool connected, const String &ip, uint16_t port);
+
+    // WebSocket Metrics
+    static WebSocketMetrics &getWebSocketMetrics() { return webSocketMetrics; }
+    static void updateWebSocketMetrics(const WebSocketMetrics &metrics);
 
     // System Info
     static void setBootTime(unsigned long time) { bootTime = time; }

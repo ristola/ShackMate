@@ -8,6 +8,7 @@ DeviceConfig DeviceState::deviceConfig;
 CalibrationData DeviceState::calibrationData;
 SensorData DeviceState::sensorData;
 ConnectionState DeviceState::connectionState;
+WebSocketMetrics DeviceState::webSocketMetrics;
 unsigned long DeviceState::bootTime = 0;
 
 void DeviceState::init()
@@ -203,6 +204,11 @@ void DeviceState::setConnectionState(bool connected, const String &ip, uint16_t 
         connectionState.connectedServerPort = port;
         connectionState.lastWebSocketActivity = millis();
     }
+}
+
+void DeviceState::updateWebSocketMetrics(const WebSocketMetrics &metrics)
+{
+    webSocketMetrics = metrics;
 }
 
 String DeviceState::getUptime()
