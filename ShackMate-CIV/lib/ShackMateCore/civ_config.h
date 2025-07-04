@@ -8,7 +8,7 @@
 #define AUTHOR "Half Baked Circuits"
 #define MDNS_NAME "shackmate-civ"
 
-// Network Configuration (same as ShackMateCore)
+// Network Configuration
 #define UDP_PORT 4210
 #define WEBSOCKET_PORT 4000
 #define HTTP_PORT 80
@@ -37,7 +37,7 @@
 #define WIFI_RESET_BTN_PIN 39 // M5Atom button is GPIO39
 #endif
 
-// CI-V Specific Timing Constants (not in ShackMateCore)
+// CI-V Specific Timing Constants
 static constexpr unsigned long CACHE_WINDOW_MS = 1000;
 static constexpr int CACHE_MAX_SIZE = 32;
 
@@ -47,12 +47,3 @@ static constexpr unsigned long WS_PING_TIMEOUT_MS = 5000;
 static constexpr unsigned long WS_RECONNECT_DELAY_MS = 2000;
 static constexpr int WS_MESSAGE_RATE_LIMIT = 10;
 static constexpr int WS_MAX_RECONNECT_ATTEMPTS = 5;
-
-// Device Configuration
-#define DEFAULT_DEVICE_NAME "ShackMate CI-V Controller"
-#define DEFAULT_CIV_MODEL_TYPE 0x10 // CI-V Controller model type
-
-// Version is already defined at the top, but ensure it's available
-#ifndef VERSION
-#define VERSION "2.2.0"
-#endif

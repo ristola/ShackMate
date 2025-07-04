@@ -5,11 +5,6 @@
 #include <functional>
 #include "../ShackMateCore/civ_config.h"
 
-// CI-V Configuration
-#define CIV_ADDRESS 0xC0
-#define CACHE_WINDOW_MS 1000
-#define CACHE_MAX_SIZE 50
-
 // CI-V Frame validation and processing utilities
 namespace CivHandler
 {
