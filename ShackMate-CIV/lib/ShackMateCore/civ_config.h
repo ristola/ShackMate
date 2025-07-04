@@ -39,11 +39,11 @@
 
 // CI-V Specific Timing Constants
 static constexpr unsigned long CACHE_WINDOW_MS = 1000;
-static constexpr int CACHE_MAX_SIZE = 32;
+static constexpr int CACHE_MAX_SIZE = 64; // Increased from 32 to 64 for high traffic
 
 // WebSocket Constants for CI-V Controller
 static constexpr unsigned long WS_PING_INTERVAL_MS = 30000;
 static constexpr unsigned long WS_PING_TIMEOUT_MS = 5000;
 static constexpr unsigned long WS_RECONNECT_DELAY_MS = 2000;
-static constexpr int WS_MESSAGE_RATE_LIMIT = 10;
+static constexpr int WS_MESSAGE_RATE_LIMIT = 100; // Increased from 50 to 100 messages/second for high CI-V traffic
 static constexpr int WS_MAX_RECONNECT_ATTEMPTS = 5;

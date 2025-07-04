@@ -10,7 +10,7 @@ _Copyright (c) 2025 Half Baked Circuits - N4LDR_
 
 The ShackMate CI-V Controller is a clean, modular bidirectional CI-V bridge that seamlessly connects ICOM radios to network-based control applications via WebSocket. Built on the M5Stack Atom platform (ESP32), it provides a robust, maintainable interface for remote radio control and monitoring.
 
-This refactored version focuses exclusively on CI-V communication and WebSocket connectivity, with all relay/sensor functionality removed for a cleaner, more focused codebase.
+This version focuses exclusively on CI-V communication and WebSocket connectivity.
 
 ## ✨ Key Features
 
@@ -25,7 +25,9 @@ This refactored version focuses exclusively on CI-V communication and WebSocket 
 
 ### **Enhanced CI-V Features**
 
-- **Smart Auto-Reply**: Responds to CI-V address queries (0x19 00/19 01) from broadcast address 0xEE
+- **Smart Auto-Reply**: Responds to CI-V queries from broadcast address 0xEE:
+  - **0x19 00**: Returns the device's CI-V address (0xC0)
+  - **0x19 01**: Returns the device's IP address for network identification
 - **Filtered WebSocket Forwarding**: Only forwards appropriate frames to prevent feedback loops
 - **Frame Validation**: Proper CI-V frame detection with start/end markers and checksum validation
 - **Overflow Protection**: Safe buffer handling with comprehensive overflow detection
@@ -175,7 +177,9 @@ WiFi Reset Button: GPIO39 (built-in M5Atom button)
 
 - **PC Command Filtering**: Only forwards valid PC-originated commands (FROM: 0xEE, TO: radio address)
 - **Response Forwarding**: All radio responses are forwarded to WebSocket
-- **ESP32 CI-V Response**: Responds to CI-V address queries (0x19 00) with its own address
+- **ESP32 CI-V Auto-Reply**: Responds to CI-V queries from management address (0xEE):
+  - **Command 0x19 00**: Returns device CI-V address (0xC0)
+  - **Command 0x19 01**: Returns device IP address for network discovery
 - **Echo Prevention**: Tracks outgoing messages to prevent re-forwarding from serial ports
 
 ### Multi-Client Support
@@ -198,6 +202,63 @@ WiFi Reset Button: GPIO39 (built-in M5Atom button)
 ```
 FE FE [TO_ADDR] [FROM_ADDR] [COMMAND] [DATA...] FD
 ```
+
+### ShackMate CI-V Controller Commands
+
+The ESP32 controller (address 0xC0) responds to these management commands when sent from address 0xEE:
+
+- **`FE FE 00 EE 19 00 FD`**: Broadcast query for CI-V address
+
+  - **Response**: `FE FE EE C0 19 00 C0 FD` (returns controller address 0xC0)
+
+- **`FE FE 00 EE 19 01 FD`**: Broadcast query for IP address
+  - **Response**: `FE FE EE C0 19 01 [IP_BYTES] FD` (returns device IP address in decimal format)
+
+### ShackMate Ecosystem Device Discovery
+
+Your data shows a complete ShackMate ecosystem integration:
+
+| Device Address | Device Type               | IP Address   | Purpose               |
+| -------------- | ------------------------- | ------------ | --------------------- |
+| **0xB0**       | Wyze Outdoor Power Switch | 10.146.1.164 | AC power control      |
+| **0xB4**       | ShackMate Antenna Switch  | 10.146.1.35  | RF antenna switching  |
+| **0xC0**       | ShackMate CI-V Controller | 10.146.1.217 | CI-V bridge & control |
+
+### Analysis of Your CI-V Data
+
+Based on your captured data, your network shows:
+
+- **Radio 0x94**: **ICOM IC-7300** (responds to address queries, FA to IP queries - normal)
+- **Radio 0xA2**: **ICOM IC-9700** (responds to address queries, FA to IP queries - normal)
+- **Radio 0xB0**: **Wyze Outdoor Power Switch** (IP: 10.146.1.164)
+- **Radio 0xB4**: **ShackMate Antenna Switch** (IP: 10.146.1.35)
+- **Radio 0xC0**: **Your ShackMate CI-V Controller** (IP: 10.146.1.217)
+
+### CI-V Command Support
+
+Different devices support different CI-V commands:
+
+#### **Standard ICOM Radios (IC-7300, IC-9700, etc.)**
+
+- **0x19 00** (Address Query): ✅ **Supported** - Returns device CI-V address
+- **0x19 01** (IP Query): ❌ **Not Supported** - Returns **FA FD** (NG/Error) - This is normal behavior
+
+#### **ShackMate Ecosystem Devices**
+
+- **0x19 00** (Address Query): ✅ **Supported** - Returns device CI-V address
+- **0x19 01** (IP Query): ✅ **Supported** - Returns device IP address for network management
+
+**Note**: The **FA FD** response from ICOM radios to IP address queries (0x19 01) is expected and normal behavior, as standard ICOM radios do not implement this ShackMate-specific network management command.
+
+### CI-V Address Ranges
+
+The ShackMate ecosystem uses specific address ranges for different device types:
+
+- **0xB0 - 0xB3**: Wyze Outdoor Power Switches
+- **0xB4 - 0xB7**: ShackMate Antenna Switches
+- **0xC0**: ShackMate CI-V Controllers
+
+All devices respond appropriately to both address (0x19 00) and IP address (0x19 01) queries, confirming proper network integration.
 
 ### WebSocket Message Format
 
@@ -265,6 +326,7 @@ pio device monitor
 3. **CI-V not working**: Check baud rate (default 19200) and verify wiring connections
 4. **OTA fails**: Verify IP address in platformio.ini matches device IP
 5. **Web dashboard not loading**: Run `pio run -e esp32dev -t uploadfs` to upload dashboard files
+6. **ICOM radios show FA FD responses**: Normal behavior for IP address queries (0x19 01) - ICOM radios don't support this command
 
 ### Debug Information
 
