@@ -67,7 +67,8 @@ CivHandler::SerialHandler serial2Handler(Serial2, "Serial2");
 volatile uint32_t stat_ws_rx = 0;
 volatile uint32_t stat_ws_tx = 0;
 volatile uint32_t stat_ws_dup = 0;
-// Reboot counter now handled by DeviceState
+// Reboot counter (persisted in NVS Preferences)
+uint32_t reboot_counter = 0;
 
 // Flag to signal that status update is needed (non-blocking communication between cores)
 volatile bool statusUpdatePending = false;
@@ -648,9 +649,12 @@ void broadcastStatus()
   doc["ws_server_port"] = lastDiscoveredPort.length() > 0 ? lastDiscoveredPort : "";
   doc["version"] = String(VERSION);
   doc["uptime"] = DeviceState::getUptime();
-  doc["reboots"] = DeviceState::getRebootCounter();
+  doc["reboots"] = reboot_counter;
   // Use ShackMateCore system info where possible
-  doc["free_heap"] = getFreeHeap();
+  doc["chip_id"] = getChipID();
+  doc["cpu_freq"] = String(getCpuFrequency());
+  doc["free_heap"] = String(getFreeHeap() / 1024);
+  doc["civ_baud"] = civBaud;
   doc["civ_addr"] = "0x" + String(CIV_ADDRESS, HEX);
   doc["serial1"] = "RX=" + String(MY_RX1) + " TX=" + String(MY_TX1);
   doc["serial2"] = "RX=" + String(MY_RX2) + " TX=" + String(MY_TX2);
@@ -670,7 +674,7 @@ void broadcastStatus()
   doc["serial2_broadcast"] = serial2Stats.broadcastFrames;
   doc["ws_rx"] = stat_ws_rx;
   doc["ws_tx"] = stat_ws_tx;
-  doc["ws-dup"] = stat_ws_dup;
+  doc["ws_dup"] = stat_ws_dup;
 
   // WebSocket reliability metrics
   const auto &ws_metrics = DeviceState::getWebSocketMetrics();
@@ -888,7 +892,7 @@ void webuiEventTask(void *parameter)
     if (eventBits & EVENT_MEMORY_UPDATE)
     {
       DynamicJsonDocument doc(256);
-      doc["free_heap"] = getFreeHeap();
+      doc["free_heap"] = String(getFreeHeap() / 1024);
       String json;
       serializeJson(doc, json);
       wsServer.textAll(json);
@@ -908,7 +912,7 @@ void webuiEventTask(void *parameter)
       doc["serial2_broadcast"] = serial2Stats.broadcastFrames;
       doc["ws_rx"] = stat_ws_rx;
       doc["ws_tx"] = stat_ws_tx;
-      doc["ws-dup"] = stat_ws_dup;
+      doc["ws_dup"] = stat_ws_dup;
 
       // WebSocket reliability metrics
       const auto &ws_metrics = DeviceState::getWebSocketMetrics();
@@ -995,8 +999,13 @@ void setup()
   }
   Logger::info("WebUI event group created successfully");
 
-  // Reboot counter now handled by DeviceState::init()
-  LOG_INFO("Reboot count: " + String(DeviceState::getRebootCounter()));
+  // Load and increment reboot counter
+  Preferences rebootPrefs;
+  rebootPrefs.begin("sys", false);
+  reboot_counter = rebootPrefs.getUInt("reboots", 0) + 1;
+  rebootPrefs.putUInt("reboots", reboot_counter);
+  rebootPrefs.end();
+  LOG_INFO("Reboot count: " + String(reboot_counter));
 
   LOG_INFO("================================================");
   LOG_INFO("        SHACKMATE CI-V CONTROLLER STARTING");
@@ -1305,7 +1314,9 @@ void loop()
     tcpDoc["version"] = String(VERSION);
     tcpDoc["uptime"] = DeviceState::getUptime();
     tcpDoc["chip_id"] = getChipID();
-    tcpDoc["free_heap"] = getFreeHeap();
+    tcpDoc["cpu_freq"] = String(getCpuFrequency());
+    tcpDoc["free_heap"] = String(getFreeHeap() / 1024);
+    tcpDoc["civ_baud"] = civBaud;
     tcpDoc["civ_addr"] = "0x" + String(CIV_ADDRESS, HEX);
     tcpDoc["serial1"] = "RX=" + String(MY_RX1) + " TX=" + String(MY_TX1);
     tcpDoc["serial2"] = "RX=" + String(MY_RX2) + " TX=" + String(MY_TX2);
